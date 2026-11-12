@@ -315,7 +315,7 @@ DEVICES = [
     # Same chip, RAM and CFW folder layout as the SP, so installs work; pick by stick count so the
     # recommendations fit. Results in the beta sheet tell us which models to add as their own cards.
     Device(
-        id="h700-nosticks", name="Other H700 handheld (no sticks)", chip="Allwinner H700", ram="1 GB",
+        id="h700-nosticks", name="Other H700 (no sticks)", chip="Allwinner H700", ram="1 GB",
         screen="RG35XX Plus / 2024, RG34XX, RG28XX …", enabled=True, sticks=0,
         tags={"lowpower"}, unsupported_reqs=LOW_RAM,
         cfws=["muos", "knulli", "rocknix"],
@@ -323,7 +323,7 @@ DEVICES = [
         body="#4b5160", accent="#fbbf24",
     ),
     Device(
-        id="h700-sticks", name="Other H700 handheld (with sticks)", chip="Allwinner H700", ram="1 GB",
+        id="h700-sticks", name="Other H700 (with sticks)", chip="Allwinner H700", ram="1 GB",
         screen="RG35XX H, RG40XX H / V, RG CubeXX …", enabled=True, sticks=2,
         tags={"lowpower"}, unsupported_reqs=LOW_RAM,
         cfws=["muos", "knulli", "rocknix"],
