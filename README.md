@@ -41,7 +41,7 @@ Bugs: open an issue here.
 |---|---|
 | **v1.0** | **Freeware only.** Installs free, ready-to-run ports, downloaded directly from PortMaster. No game files needed. |
 | **v1.1** | **Wireless + updates.** Install over your home WiFi (SSH/SFTP) without taking the SD card out. PortPicker reads the device model, CFW version and both cards straight from the handheld. Also: update PortMaster and update installed games. |
-| **v1.2** | **Steam.** Log in with the Steam app (QR code, optional "Remember me"). PortPicker downloads the game files a port needs from your own Steam library. |
+| **v1.2** | **Steam.** Log in with the Steam app (QR code). PortPicker downloads the game files a port needs from your own Steam library. |
 | later | Maybe other game stores. Not decided yet. |
 
 PortPicker does **not** use game files that are already on your PC. Game files will only come from a store account
