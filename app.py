@@ -473,6 +473,7 @@ class DevicePage(QWidget):
             c.setFixedSize(250, 300)
             c.v.addWidget(DeviceArt(d), 1)
             name = QLabel(d.name)
+            name.setWordWrap(True)  # long names wrap instead of being cut off
             name.setStyleSheet("font-size:16px;font-weight:700;")
             c.v.addWidget(name)
             c.v.addWidget(muted(f"{d.chip} · RAM {d.ram}\n{d.screen} · {d.sticks} {t('device.sticks', 'sticks')}"))
