@@ -5,7 +5,7 @@ straight from PortMaster onto your SD card. Windows app.
 
 > **Status:** v1.0 beta. Looking for testers, see below.
 
-## 🧪 Beta testers wanted
+## 🧪 Super Early Beta testers wanted
 
 PortPicker v1.0 is in beta and I need people to try it on real devices.
 
@@ -21,7 +21,7 @@ Your test results now are what get it there.
 **Wanted most (muOS 2606.0+):**
 
 - Anbernic RG35XX SP: tested by the developer (1 and 2 cards). More units welcome.
-- TrimUI Brick Pro on muOS: not tested yet.
+- TrimUI Brick Pro on muOS: tested by me.
 - 1-card and 2-card setups. With 2 cards on muOS, ports go to SD2 and the app asks you to swap in SD1 for runtimes
   and box art.
 
