@@ -18,7 +18,7 @@ downloads the game files a port needs from your own Steam library and puts them 
 for the right files and versions by hand. That's the part that should really help, if it can be made to work.
 Your test results now are what get it there.
 
-**Wanted most (muOS 2606.0+):**
+**Wanted most (muOS 2606.0+), KNULLI Scarab:**
 
 - Anbernic RG35XX SP: tested by the developer (1 and 2 cards). More units welcome.
 - TrimUI Brick Pro on muOS: tested by me.
