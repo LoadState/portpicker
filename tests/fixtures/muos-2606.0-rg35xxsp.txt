@@ -1,0 +1,40 @@
+# muOS 2606.0 Andromeda (Anbernic RG35XX SP) SD card layout fixture
+# Release: 2606.0 Andromeda
+# Image: MustardOS_RG35XX-SP_2606.0_ANDROMEDA-db2a3bd0.img.gz
+# SHA256: af386567548372e55a0a3bbf7db21df059441c3fe678a057243bdcb66f8d4771
+# Source manifest: https://github.com/MustardOS/mustardos.github.io/blob/main/_data/devices/rg35xx-sp.yml
+# Source website: https://muos.dev/release/current/2606_0
+.VolumeIcon.icns
+autorun.inf
+muoslogo.ico
+ARCHIVE/
+ports/
+ROMS/
+ROMS/Ports/
+MUOS/
+MUOS/application/
+MUOS/bios/
+MUOS/init/
+MUOS/network/
+MUOS/pickles/
+MUOS/save/
+MUOS/theme/
+MUOS/theme/MustardOS/
+MUOS/theme/MustardOS/version.txt: 2606.0
+MUOS/info/
+MUOS/info/catalogue/
+MUOS/info/catalogue/External - Ports/
+MUOS/info/catalogue/External - Ports/box/
+MUOS/info/manifest/
+MUOS/info/name/
+MUOS/PortMaster/
+MUOS/PortMaster/version: 2026.06.23-0015
+MUOS/PortMaster/control.txt
+MUOS/PortMaster/device_info.txt
+MUOS/PortMaster/funcs.txt
+MUOS/PortMaster/mod_muOS.txt
+MUOS/PortMaster/PortMaster.sh
+MUOS/PortMaster/libs/
+opt/muos/config/system/version: 2606.0_ANDROMEDA
+opt/muos/config/system/build: db2a3bd0
+opt/muos/device/config/board/name: rg35xx-sp
