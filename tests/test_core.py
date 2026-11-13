@@ -325,10 +325,10 @@ def test_v1_device_and_cfw_configuration():
     assert any("Brick Pro" in tip for tip in CROSSMIX.after_install)
 
     # Tested pairs: only rg35xxsp + muOS is tested on hardware so far (2026-11-12)
-    assert TESTED_PAIRS == {("rg35xxsp", "muos")}
+    assert TESTED_PAIRS == {("rg35xxsp", "muos"), ("brickpro", "muos")}
     assert is_tested("rg35xxsp", "muos")
     assert not is_tested("brickpro", "nextui")
-    assert not is_tested("brickpro", "muos")
+    assert is_tested("brickpro", "muos")
     assert not is_tested("brickpro", "knulli")
     assert not is_tested("brickpro", "spruce")
     assert not is_tested("brickpro", "crossmix")

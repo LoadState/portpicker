@@ -51,10 +51,10 @@ PortPicker does **not** use game files that are already on your PC. Game files w
 
 | Device | Chip / RAM | CFW |
 |---|---|---|
-| TrimUI Brick Pro | Allwinner A133P / 1 GB | NextUI, muOS, KNULLI, spruceOS, CrossMix |
+| TrimUI Brick Pro | Allwinner A133P / 1 GB | muOS ✓ tested, NextUI, KNULLI, spruceOS, CrossMix |
 | Anbernic RG35XX SP | Allwinner H700 / 1 GB | muOS ✓ tested (1 and 2 cards), KNULLI, ROCKNIX, spruceOS |
 
-Only **RG35XX SP + muOS** has been tested on real hardware so far. Every other device + CFW pair shows a
+Only **muOS** on **RG35XX SP** and **Brick Pro** has been tested on real hardware so far (NextUI not yet). Every other device + CFW pair shows a
 **"Beta — not tested on real hardware"** label. More devices are already defined in `profiles.py` but switched off
 until they are tested.
 

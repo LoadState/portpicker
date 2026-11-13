@@ -232,6 +232,7 @@ CFWS = [
 # Hardware-verified device + CFW combinations
 TESTED_PAIRS: set[tuple[str, str]] = {
     ("rg35xxsp", "muos"),  # 2026-11-12 dev test, 2 cards: 6 ports installed and all start
+    ("brickpro", "muos"),  # 2026-11-13 dev test: works
 }
 
 
