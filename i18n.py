@@ -854,6 +854,78 @@ STRINGS: dict[str, dict[str, str]] = {
     },
 
     # ------------------------------------------------------------------------
+    # Wireless transfer
+    # ------------------------------------------------------------------------
+    "wireless.connect_btn": {
+        "en": "📡 Connect via Wi-Fi",
+        "th": "📡 เชื่อมต่อผ่าน Wi-Fi",
+    },
+    "wireless.title": {
+        "en": "Connect Handheld over Wi-Fi",
+        "th": "เชื่อมต่อเครื่องเกมผ่าน Wi-Fi",
+    },
+    "wireless.scanning": {
+        "en": "Searching local network for handhelds…",
+        "th": "กำลังค้นหาเครื่องเกมในเครือข่าย…",
+    },
+    "wireless.host": {
+        "en": "Handheld Host / IP:",
+        "th": "โฮสต์หรือไอพีเครื่องเกม:",
+    },
+    "wireless.port": {
+        "en": "Port:",
+        "th": "พอร์ต:",
+    },
+    "wireless.user": {
+        "en": "Username:",
+        "th": "ชื่อผู้ใช้:",
+    },
+    "wireless.password": {
+        "en": "Password:",
+        "th": "รหัสผ่าน:",
+    },
+    "wireless.auto_default": {
+        "en": "Try default CFW credentials automatically",
+        "th": "ลองรหัสผ่านเริ่มต้นของ CFW อัตโนมัติ",
+    },
+    "wireless.remember": {
+        "en": "Remember password (DPAPI)",
+        "th": "จำรหัสผ่าน (DPAPI)",
+    },
+    "wireless.connect_and_probe": {
+        "en": "Connect & Probe",
+        "th": "เชื่อมต่อและตรวจสอบเครื่อง",
+    },
+    "wireless.connecting": {
+        "en": "Connecting and probing handheld…",
+        "th": "กำลังเชื่อมต่อและตรวจเช็กเครื่องเกม…",
+    },
+    "wireless.connected_success": {
+        "en": "✔ Connected to {device} ({cfw})",
+        "th": "✔ เชื่อมต่อไปยัง {device} ({cfw}) แล้ว",
+    },
+    "wireless.default_pass_warn": {
+        "en": "⚠ Default password ({user}) was used. For security, change it if on public networks.",
+        "th": "⚠ ใช้รหัสผ่านเริ่มต้น ({user}) อยู่ หากใช้ในเครือข่ายสาธารณะแนะนำให้เปลี่ยนรหัสผ่าน",
+    },
+    "wireless.size_warning_1_5gb": {
+        "en": "Total transfer size is {size} (> 1.5 GB). Wi-Fi transfer on handhelds typically runs at 2-5 MB/s and may take over {eta}. Using an SD card reader on your PC is recommended for large transfers.",
+        "th": "ขนาดไฟล์รวมทั้งหมด {size} (> 1.5 GB) การส่งผ่าน Wi-Fi ของเครื่องเกมอาจใช้เวลากว่า {eta} แนะนำให้ถอดเมมเสียบ Card reader จะไวกว่ามาก",
+    },
+    "wireless.wifi_dropped": {
+        "en": "Wi-Fi connection to handheld was lost. Please keep device awake and retry.",
+        "th": "การเชื่อมต่อ Wi-Fi หลุด กรุณาเปิดหน้าจอเครื่องไว้แล้วลองใหม่",
+    },
+    "wireless.use_device_btn": {
+        "en": "Use This Handheld",
+        "th": "เลือกเครื่องนี้",
+    },
+    "wireless.disconnect_btn": {
+        "en": "Disconnect",
+        "th": "ยกเลิกการเชื่อมต่อ",
+    },
+
+    # ------------------------------------------------------------------------
     # Failure hints
     # ------------------------------------------------------------------------
     "hint.md5": {
