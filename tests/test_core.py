@@ -277,13 +277,17 @@ def test_stardew_16_files_go_to_mainline_port(tmp_path):
 # --------------------------------------------------------------------------
 
 def test_v1_device_and_cfw_configuration():
-    # v1: Brick Pro, RG35XX SP and the two generic H700 cards (by stick count)
+    # v1: Brick Pro, RG35XX SP and the three generic H700 cards (by stick count: 0, 1, 2)
     enabled_devices = [d for d in DEVICES if d.enabled]
-    assert {d.id for d in enabled_devices} == {"brickpro", "rg35xxsp", "h700-nosticks", "h700-sticks"}
+    assert {d.id for d in enabled_devices} == {"brickpro", "rg35xxsp", "h700-0sticks", "h700-1stick", "h700-2sticks"}
     from core import check_device_card_match
-    gen = next(d for d in DEVICES if d.id == "h700-sticks")
-    assert gen.sticks == 2 and check_device_card_match(gen, "RG40XX-H")[0] is True
-    assert check_device_card_match(gen, "TrimUI Brick")[0] is False
+    gen0 = next(d for d in DEVICES if d.id == "h700-0sticks")
+    assert gen0.sticks == 0 and check_device_card_match(gen0, "RG35XX Plus")[0] is True
+    gen1 = next(d for d in DEVICES if d.id == "h700-1stick")
+    assert gen1.sticks == 1 and check_device_card_match(gen1, "RG40XX V")[0] is True
+    gen2 = next(d for d in DEVICES if d.id == "h700-2sticks")
+    assert gen2.sticks == 2 and check_device_card_match(gen2, "RG40XX-H")[0] is True
+    assert check_device_card_match(gen2, "TrimUI Brick")[0] is False
 
     # Other 5 devices remain present but disabled
     disabled_devices = [d for d in DEVICES if not d.enabled]
@@ -338,6 +342,36 @@ def test_v1_device_and_cfw_configuration():
 
     # KNULLI after_install contains exFAT tip
     assert any("exFAT" in tip for tip in KNULLI.after_install)
+
+
+def test_h700_stick_groups_analog_requirements():
+    st = {"broken": set(), "fixed": set(), "issues": set()}
+    p_no_analog = port("test_no_analog", arch=["aarch64"])
+    p_analog_1 = port("test_analog_1", arch=["aarch64"], reqs=["analog_1"])
+    p_analog_2 = port("test_analog_2", arch=["aarch64"], reqs=["analog_2"])
+    ports = [p_no_analog, p_analog_1, p_analog_2]
+
+    gen0 = next(d for d in DEVICES if d.id == "h700-0sticks")
+    gen1 = next(d for d in DEVICES if d.id == "h700-1stick")
+    gen2 = next(d for d in DEVICES if d.id == "h700-2sticks")
+
+    # 0 sticks: analog_1 and analog_2 are incompatible
+    core.classify(ports, gen0, MUOS, st)
+    assert p_no_analog.tier in ("ok", "must")
+    assert p_analog_1.tier == "incompatible"
+    assert p_analog_2.tier == "incompatible"
+
+    # 1 stick: analog_1 is supported, analog_2 is incompatible
+    core.classify(ports, gen1, MUOS, st)
+    assert p_no_analog.tier in ("ok", "must")
+    assert p_analog_1.tier in ("ok", "must")
+    assert p_analog_2.tier == "incompatible"
+
+    # 2 sticks: analog_1 and analog_2 are supported
+    core.classify(ports, gen2, MUOS, st)
+    assert p_no_analog.tier in ("ok", "must")
+    assert p_analog_1.tier in ("ok", "must")
+    assert p_analog_2.tier in ("ok", "must")
 
 
 def test_nextui_platform_detection_and_target(tmp_path):

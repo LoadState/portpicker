@@ -374,6 +374,13 @@ class DeviceArt(QWidget):
             self._stick(p, bx + bw * 0.64, top + rest * 0.68, bw * 0.095)
             self._pills(p, bx + bw / 2, top + rest * 0.40, bw * 0.10, spread=bw * 0.14)
             self._pills(p, bx + bw / 2, by + bh - rest * 0.08, bw * 0.08, n=3, spread=bw * 0.13)
+        elif self.d.sticks == 1:
+            cy = top + rest * 0.30
+            self._dpad(p, bx + bw * 0.26, cy, s)
+            self._abxy(p, bx + bw * 0.74, cy, s)
+            self._stick(p, bx + bw * 0.32, top + rest * 0.70, bw * 0.095)
+            self._pills(p, bx + bw / 2, top + rest * 0.45, bw * 0.10, spread=bw * 0.14)
+            self._speaker(p, bx + bw * 0.76, top + rest * 0.72, bw * 0.12)
         else:
             cy = top + rest * 0.40
             self._dpad(p, bx + bw * 0.26, cy, s * 1.1)

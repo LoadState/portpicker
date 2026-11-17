@@ -1087,7 +1087,7 @@ def check_device_card_match(dev: Device, card_device_str: str | None) -> tuple[b
         return (False, f"Device mismatch: card is for TrimUI Brick Pro, but selected device is {dev.name}")
 
     # Anbernic H700 family
-    h700_devices = ("rg35xx", "rg28xx", "rg40xx", "rgcubexx")
+    h700_devices = ("rg35xx", "rg28xx", "rg40xx", "rgcubexx", "rg34xx")
     card_is_h700 = any(h in s for h in h700_devices) or "h700" in s
     dev_is_h700 = any(h in dev_id for h in h700_devices) or "h700" in dev.chip.lower()
 

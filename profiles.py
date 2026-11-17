@@ -312,20 +312,28 @@ DEVICES = [
         must_have=A133P_MUST, heavy=A133P_HEAVY,
         body="#7b8794", accent="#e11d48", clam=True,
     ),
-    # Any other Allwinner H700 handheld (RG35XX Plus/H/2024, RG34XX, RG28XX, RG40XX H/V, RG CubeXX ...).
+    # Anbernic Allwinner H700 handhelds grouped by analog stick count (0, 1, 2).
     # Same chip, RAM and CFW folder layout as the SP, so installs work; pick by stick count so the
-    # recommendations fit. Results in the beta sheet tell us which models to add as their own cards.
+    # recommendations fit. Screen size is out of scope (we only make ports install and run).
     Device(
-        id="h700-nosticks", name="Other H700 (no sticks)", chip="Allwinner H700", ram="1 GB",
-        screen="RG35XX Plus / 2024, RG34XX, RG28XX …", enabled=True, sticks=0,
+        id="h700-0sticks", name="Anbernic H700 (0 sticks)", chip="Allwinner H700", ram="1 GB",
+        screen="RG35XX Plus / 2024, RG28XX, RG34XX …", enabled=True, sticks=0,
         tags={"lowpower"}, unsupported_reqs=LOW_RAM,
         cfws=["muos", "knulli", "rocknix"],
         must_have=A133P_MUST, heavy=A133P_HEAVY,
         body="#4b5160", accent="#fbbf24",
     ),
     Device(
-        id="h700-sticks", name="Other H700 (with sticks)", chip="Allwinner H700", ram="1 GB",
-        screen="RG35XX H, RG40XX H / V, RG CubeXX …", enabled=True, sticks=2,
+        id="h700-1stick", name="Anbernic H700 (1 stick)", chip="Allwinner H700", ram="1 GB",
+        screen="RG40XX V …", enabled=True, sticks=1,
+        tags={"lowpower"}, unsupported_reqs=LOW_RAM,
+        cfws=["muos", "knulli", "rocknix"],
+        must_have=A133P_MUST, heavy=A133P_HEAVY,
+        body="#353b48", accent="#10b981", tall=True,
+    ),
+    Device(
+        id="h700-2sticks", name="Anbernic H700 (2 sticks)", chip="Allwinner H700", ram="1 GB",
+        screen="RG35XX H, RG40XX H, RG CubeXX …", enabled=True, sticks=2,
         tags={"lowpower"}, unsupported_reqs=LOW_RAM,
         cfws=["muos", "knulli", "rocknix"],
         must_have=A133P_MUST, heavy=A133P_HEAVY,

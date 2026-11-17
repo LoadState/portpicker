@@ -20,7 +20,7 @@ Your test results now are what get it there.
 
 **Wanted most muOS Andromeda 2606.0+, KNULLI Scarab:**
 
-- Anbernic RG35XX SP: tested by the developer (1 and 2 cards). More units welcome.
+- Anbernic RG35XX SP & RG35XX H: tested by the developer (1 and 2 cards). More units welcome.
 - TrimUI Brick Pro on muOS: tested by me.
 - 1-card and 2-card setups. With 2 cards on muOS, ports go to SD2 and the app asks you to swap in SD1 for runtimes
   and box art.
@@ -53,8 +53,11 @@ PortPicker does **not** use game files that are already on your PC. Game files w
 |---|---|---|
 | TrimUI Brick Pro | Allwinner A133P / 1 GB | muOS ✓ tested, NextUI, KNULLI, spruceOS, CrossMix |
 | Anbernic RG35XX SP | Allwinner H700 / 1 GB | muOS ✓ tested (1 and 2 cards), KNULLI, ROCKNIX, spruceOS |
+| Anbernic H700 (0 sticks) | Allwinner H700 / 1 GB (RG35XX Plus / 2024, RG28XX, RG34XX …) | muOS, KNULLI, ROCKNIX |
+| Anbernic H700 (1 stick) | Allwinner H700 / 1 GB (RG40XX V …) | muOS, KNULLI, ROCKNIX |
+| Anbernic H700 (2 sticks) | Allwinner H700 / 1 GB (RG35XX H, RG40XX H, RG CubeXX …) | muOS ✓ tested on RG35XX H (1 and 2 cards), KNULLI, ROCKNIX |
 
-Only **muOS** on **RG35XX SP** and **Brick Pro** has been tested on real hardware so far (NextUI not yet). Every other device + CFW pair shows a
+Only **muOS** on **RG35XX SP**, **RG35XX H**, and **Brick Pro** has been tested on real hardware so far (NextUI not yet). Every other device + CFW pair shows a
 **"Beta — not tested on real hardware"** label. More devices are already defined in `profiles.py` but switched off
 until they are tested.
 

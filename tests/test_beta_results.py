@@ -42,6 +42,6 @@ def test_unshared_sheet_gives_nothing():
 
 def test_generic_h700_sees_results_from_any_h700_model():
     rows = core.parse_beta_results(CSV)
-    gen = next(d for d in DEVICES if d.id == "h700-nosticks")
+    gen = next(d for d in DEVICES if d.id == "h700-0sticks")
     cave = _port("Cave Story (Evo)", "cave.story-evo.zip")
     assert [h["tester"] for h in core.beta_results_for(cave, gen, MUOS, rows)] == ["tawa"]  # SP yes, Brick Pro no
