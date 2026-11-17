@@ -136,7 +136,7 @@ def test_muos_single_card_target_paths_and_install(tmp_path, monkeypatch):
 
     monkeypatch.setattr(core, "download", mock_download)
 
-    dev = next(d for d in profiles.DEVICES if "SP" in d.name)
+    dev = next(d for d in profiles.DEVICES if d.id == "h700-nosticks")  # RG35XX SP
     core.install_port(port, t, dev, utils, log=lambda *_: None)
 
     # Verify expected file landing locations
@@ -230,7 +230,7 @@ def test_muos_two_card_detection_and_install(tmp_path, monkeypatch):
 
     monkeypatch.setattr(core, "download", mock_download2)
 
-    dev = next(d for d in profiles.DEVICES if "SP" in d.name)
+    dev = next(d for d in profiles.DEVICES if d.id == "h700-nosticks")  # RG35XX SP
     core.install_port(port, t, dev, utils, log=lambda *_: None)
 
     # Ports & scripts land on card 2
