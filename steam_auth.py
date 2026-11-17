@@ -195,7 +195,43 @@ def is_steam_authenticated() -> bool:
 # QR Block Text to Module Grid & QPixmap Conversion
 # --------------------------------------------------------------------------
 
+QR_QUIET_ZONE = 4  # light modules around the code; phone scanners need it
+
+
+def qr_fullblock_lines_to_modules(lines: list[str]) -> list[list[bool]]:
+    """Parse DepotDownloader's QR text (QRCoder AsciiQRCode.GetLineByLineGraphic(1)): one text line per module
+    row, two characters per module, dark = "██", light = two spaces.
+
+    Any non-space character counts as dark, so it still works when the console code page turns "█" into "?"
+    (e.g. Thai Windows, cp874). Fully light border rows/columns are trimmed and a fresh quiet zone is added.
+    """
+    rows = [l.rstrip("\r\n") for l in lines]
+    width = max((len(r) for r in rows), default=0)
+    if width == 0:
+        return []
+    cols = (width + 1) // 2
+    grid = []
+    for r in rows:
+        r = r.ljust(cols * 2)
+        grid.append([not r[2 * c:2 * c + 2].isspace() for c in range(cols)])
+    while grid and not any(grid[0]):
+        grid.pop(0)
+    while grid and not any(grid[-1]):
+        grid.pop()
+    if not grid:
+        return []
+    left = min(row.index(True) for row in grid if any(row))
+    right = max(len(row) - 1 - row[::-1].index(True) for row in grid if any(row))
+    core = [row[left:right + 1] for row in grid]
+    n = len(core[0])
+    q = QR_QUIET_ZONE
+    blank = [False] * (n + 2 * q)
+    return [blank[:] for _ in range(q)] + [[False] * q + row + [False] * q for row in core] + [blank[:] for _ in range(q)]
+
+
 def qr_ascii_to_modules(lines: list[str]) -> list[list[bool]]:
+    if not any(ch in l for l in lines for ch in "▀▄"):
+        return qr_fullblock_lines_to_modules(lines)
     """Convert ASCII/Unicode block-character QR lines into a 2D boolean module grid.
 
     Each character cell represents up to two vertical modules using half-blocks:

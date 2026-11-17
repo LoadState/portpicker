@@ -509,3 +509,24 @@ def test_stardew_recipe_pins_readme_manifest(tmp_path):
     assert r.dest == "stardewvalleymainline/gamedata" and r.os == "windows"
     args = steam_downloader.build_depotdownloader_args(r, tmp_path)
     assert args[args.index("-manifest") + 1] == "4278718763097142923"
+
+
+def _qrcoder_lines(url, dark="██"):
+    """Mimic QRCoder AsciiQRCode.GetLineByLineGraphic(1, drawQuietZones: true), as DepotDownloader 3.4.0 prints it."""
+    import qrcode
+    qr = qrcode.QRCode(border=4)
+    qr.add_data(url)
+    qr.make(fit=True)
+    m = qr.get_matrix()  # includes the 4-module border
+    return m, ["".join(dark if v else "  " for v in row) for row in m]
+
+
+def test_depotdownloader_qr_text_parses_to_the_same_matrix():
+    m, lines = _qrcoder_lines("https://s.team/q/1/1234567890123456789")
+    assert steam_auth.qr_ascii_to_modules(lines) == [list(map(bool, r)) for r in m]
+
+
+def test_qr_parses_when_code_page_mangles_blocks():
+    # Thai Windows (cp874) can't show "█": .NET writes "?" instead
+    m, lines = _qrcoder_lines("https://s.team/q/1/987654321", dark="??")
+    assert steam_auth.qr_ascii_to_modules([l.rstrip() for l in lines]) == [list(map(bool, r)) for r in m]

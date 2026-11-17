@@ -38,6 +38,9 @@ Progress = Callable[[int, int], None]
 # Official SteamRE DepotDownloader Pinning & Verification
 # --------------------------------------------------------------------------
 
+# DepotDownloader is a console app: don't flash an empty console window over PortPicker (Windows).
+NO_CONSOLE_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
+
 DEPOT_DOWNLOADER_VERSION = "3.4.0"
 DEPOT_DOWNLOADER_TAG = "DepotDownloader_3.4.0"
 
@@ -307,6 +310,9 @@ def run_depot_downloader_process(
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
+        encoding="utf-8",
+        errors="replace",
+        creationflags=NO_CONSOLE_WINDOW,
         bufsize=1,
     )
 
@@ -453,6 +459,9 @@ def run_depot_downloader_qr_login(
         stdout=subprocess.PIPE,
         stderr=subprocess.STDOUT,
         text=True,
+        encoding="utf-8",
+        errors="replace",
+        creationflags=NO_CONSOLE_WINDOW,
         bufsize=1,
     )
 
@@ -502,12 +511,15 @@ def run_depot_downloader_qr_login(
             continue
 
         if in_qr_block:
-            # QR ascii art consists of block characters or spaces
-            if any(ch in line_str for ch in "█▀▄▌▐░▒▓#"):
-                qr_lines.append(line_str)
-                on_qr_lines(list(qr_lines))
-            elif qr_lines and line_str == "":
+            # QR rows are "██"/"  " per module (the code page may turn █ into ?). Blank lines can be light
+            # rows or the quiet zone, so keep them; any line with letters ends the block.
+            if re.search(r"[A-Za-z]", line_str):
                 in_qr_block = False
+            else:
+                qr_lines.append(line_str)
+                if any(not ch.isspace() for ch in line_str):
+                    on_qr_lines(list(qr_lines))
+                continue
 
         # Match login success message
         # Format: "Success! Next time you can login with -username <user> -remember-password instead of -qr."
