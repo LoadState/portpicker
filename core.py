@@ -1668,22 +1668,47 @@ def install_port(p: Port, t: Target, dev: Device, utils: dict, log: Log,
         img = image_path(p.stem, p.cover) or image_path(p.stem, p.screenshot)
         if img:
             t.media_dir.mkdir(parents=True, exist_ok=True)
-            copy_box_art(img, t.media_dir / (Path(p.scripts[0]).stem + ".png"))
+            copy_box_art(img, t.media_dir / (Path(p.scripts[0]).stem + ".png"), dev)
 
 
-def copy_box_art(src: Path, dest: Path) -> None:
-    """Copy a cover/screenshot as box art. Front-ends (muOS) load box/<name>.png by extension, so a JPEG saved
-    under a .png name shows no picture. Convert real JPEGs to PNG; plain copy if it is already PNG or Qt is missing."""
-    data = src.read_bytes()[:8]
-    if dest.suffix.lower() == ".png" and not data[1:4] == b"PNG":
-        try:
-            from PySide6.QtGui import QImage  # only the UI ships Qt; core stays importable without it
-            img = QImage(str(src))
-            if not img.isNull() and img.save(str(dest), "PNG"):
-                return
-        except ImportError:
-            pass
-    shutil.copy2(src, dest)
+BOX_ART_W_FRACTION = 0.45  # box art may use at most 45% of the screen width…
+BOX_ART_H_FRACTION = 0.60  # …and 60% of its height, so it never covers the game list
+
+
+def screen_resolution(dev: Device | None) -> tuple[int, int]:
+    """Screen size in pixels from the device profile text (e.g. 1024×768); 640×480 (most H700 handhelds) if unknown."""
+    m = re.search(r"(\d{3,4})\s*[×xX]\s*(\d{3,4})", getattr(dev, "screen", "") or "")
+    return (int(m.group(1)), int(m.group(2))) if m else (640, 480)
+
+
+def box_art_limits(dev: Device | None) -> tuple[int, int]:
+    w, h = screen_resolution(dev)
+    return (round(w * BOX_ART_W_FRACTION), round(h * BOX_ART_H_FRACTION))
+
+
+def copy_box_art(src: Path, dest: Path, dev: Device | None = None) -> None:
+    """Write a cover/screenshot as muOS box art: PNG (muOS loads box/<name>.png by extension), scaled down to fit
+    box_art_limits(dev) keeping the aspect ratio (never scaled up). muOS docs advise resizing images rather than
+    letting the theme scale them. Plain copy only if Qt is missing."""
+    try:
+        from PySide6.QtCore import Qt
+        from PySide6.QtGui import QImage  # only the UI ships Qt; core stays importable without it
+    except ImportError:
+        shutil.copy2(src, dest)
+        return
+    img = QImage(str(src))
+    if img.isNull():
+        shutil.copy2(src, dest)
+        return
+    max_w, max_h = box_art_limits(dev)
+    too_big = img.width() > max_w or img.height() > max_h
+    if not too_big and src.read_bytes()[1:4] == b"PNG":
+        shutil.copy2(src, dest)  # already a PNG that fits: keep it byte-for-byte
+        return
+    if too_big:
+        img = img.scaled(max_w, max_h, Qt.KeepAspectRatio, Qt.SmoothTransformation)
+    if not img.save(str(dest), "PNG"):
+        shutil.copy2(src, dest)
 
 
 def copy_runtimes_and_media_to_card1(
@@ -1728,7 +1753,7 @@ def copy_runtimes_and_media_to_card1(
             if img:
                 media_dir.mkdir(parents=True, exist_ok=True)
                 dest = media_dir / (Path(p.scripts[0]).stem + ".png")
-                copy_box_art(img, dest)
+                copy_box_art(img, dest, dev)
                 media_copied += 1
 
     return runtimes_copied, media_copied
