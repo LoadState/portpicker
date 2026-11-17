@@ -26,9 +26,10 @@ import wireless
 # --------------------------------------------------------------------------
 
 class MockSFTPStat:
-    def __init__(self, size: int = 1024, is_dir: bool = False):
+    def __init__(self, size: int = 1024, is_dir: bool = False, filename: str = ""):
         self.st_size = size
         self.st_mode = stat.S_IFDIR | 0o755 if is_dir else stat.S_IFREG | 0o644
+        self.filename = filename
 
 
 class MockSFTPClient:
@@ -38,6 +39,30 @@ class MockSFTPClient:
         self.put_calls: list[tuple[str, str]] = []
         self.rename_calls: list[tuple[str, str]] = []
         self.removed_files: list[str] = []
+
+    def listdir_attr(self, remote_path: str) -> list[MockSFTPStat]:
+        rp = remote_path.rstrip("/")
+        entries = []
+        prefix = rp + "/"
+        found = set()
+        for d in sorted(self.dirs):
+            if d.startswith(prefix):
+                sub = d[len(prefix):].split("/")[0]
+                if sub and sub not in found:
+                    found.add(sub)
+                    entries.append(MockSFTPStat(0, is_dir=True, filename=sub))
+        for f in sorted(self.files):
+            if f.startswith(prefix):
+                sub = f[len(prefix):].split("/")[0]
+                if sub and sub not in found:
+                    found.add(sub)
+                    is_d = "/" in f[len(prefix):]
+                    entries.append(MockSFTPStat(len(self.files[f]) if not is_d else 0, is_dir=is_d, filename=sub))
+        return entries
+
+    def rmdir(self, remote_path: str):
+        rp = remote_path.rstrip("/")
+        self.dirs.discard(rp)
 
     def stat(self, remote_path: str) -> MockSFTPStat:
         rp = remote_path.rstrip("/")
@@ -374,20 +399,21 @@ def test_transfer_port_wireless_with_runtime_skip(tmp_path, mock_remote_env):
     assert "/mnt/sdcard/ROMS/Ports/testport.sh" in sftp.files
 
     # 3. chmod +x should have been executed on the script
-    assert any("chmod +x '/mnt/sdcard/ROMS/Ports/testport.sh'" in cmd for cmd in ssh.executed_commands)
+    assert any("chmod +x " in cmd and "testport.sh" in cmd for cmd in ssh.executed_commands)
 
     # 4. Runtime should be SKIPPED because MD5 matches
     assert any("already present (MD5 match) — skipped" in l for l in logs)
 
 
 def test_finalize_wireless_session_hooks(mock_remote_env):
-    """Test sync and muOS catalogue refresh commands."""
+    """Test sync command and menu reopen tip (unverified API removed)."""
     conn, ssh, _ = mock_remote_env
     logs = []
 
     wireless.finalize_wireless_session(conn, "muos", logs.append)
     assert "sync" in ssh.executed_commands
-    assert any("api/catalogue/refresh" in cmd for cmd in ssh.executed_commands)
+    assert not any("api/catalogue/refresh" in cmd for cmd in ssh.executed_commands)
+    assert any("Ports menu" in l for l in logs)
 
 
 def test_keepalive_set_on_connect():
@@ -516,8 +542,128 @@ def test_wireless_target_properties(mock_remote_env):
 
     wt = wireless.WirelessTarget(MUOS, conn, probe)
     assert wt.is_wireless is True
-    assert str(wt.ports_dir) == "/mnt/sdcard/ports"
-    assert str(wt.scripts_dir) == "/mnt/sdcard/ROMS/Ports"
-    assert str(wt.libs_dir) == "/mnt/mmc/MUOS/PortMaster/libs"
-    assert str(wt.media_dir) == "/mnt/mmc/MUOS/info/catalogue/External - Ports/box"
+    assert wt.ports_dir.as_posix() == "/mnt/sdcard/ports"
+    assert wt.scripts_dir.as_posix() == "/mnt/sdcard/ROMS/Ports"
+    assert wt.libs_dir.as_posix() == "/mnt/mmc/MUOS/PortMaster/libs"
+    assert wt.media_dir.as_posix() == "/mnt/mmc/MUOS/info/catalogue/External - Ports/box"
     assert wt.pak_installed() is True
+
+
+def test_clean_port_dir_safety(tmp_path, mock_remote_env):
+    """Verify clean=True uses SFTP removal and rejects unsafe dir names (path traversal)."""
+    conn, ssh, sftp = mock_remote_env
+    sftp.files["/opt/muos/config/system/version"] = b"2606.0\n"
+    sftp.dirs.add("/mnt/mmc")
+    sftp.dirs.add("/mnt/sdcard")
+    sftp.dirs.add("/mnt/sdcard/ports")
+    sftp.dirs.add("/mnt/sdcard/ports/safegame")
+    sftp.files["/mnt/sdcard/ports/safegame/old.bin"] = b"old"
+    probe = wireless.probe_remote(conn)
+
+    dev = next(d for d in DEVICES if d.id == "rg35xxsp")
+
+    # Port with safe dir AND malicious/unsafe dirs
+    port = make_port(
+        "testsafe",
+        items=["testsafe.sh", "safegame", "", "/root", "../outside", "escape/sub"],
+    )
+
+    zip_bytes = io.BytesIO()
+    with zipfile.ZipFile(zip_bytes, "w") as zf:
+        zf.writestr("testsafe.sh", "#!/bin/sh\n")
+        zf.writestr("safegame/game.bin", "data")
+    zip_data = zip_bytes.getvalue()
+
+    logs = []
+    with patch("core.download", return_value=tmp_path / "testsafe.zip"):
+        (tmp_path / "testsafe.zip").write_bytes(zip_data)
+        wireless.transfer_port_wireless(
+            conn=conn,
+            port=port,
+            probe=probe,
+            dev=dev,
+            utils={},
+            log=logs.append,
+            clean=True,
+        )
+
+    # 1. Unsafe directories should have been skipped with warnings
+    assert any("Skipping unsafe port directory" in l for l in logs)
+    # Ensure no rm -rf was run on root or ../outside
+    assert not any("rm -rf /root" in cmd for cmd in ssh.executed_commands)
+    assert not any("rm -rf '/'" in cmd for cmd in ssh.executed_commands)
+    assert not any("rm -rf /" == cmd.strip() for cmd in ssh.executed_commands)
+
+    # 2. Safe directory should have been cleaned
+    assert "/mnt/sdcard/ports/safegame/old.bin" not in sftp.files
+
+
+def test_shlex_quoting(mock_remote_env):
+    """Verify shlex.quote is used on paths with quotes, spaces, and metacharacters."""
+    import shlex
+    conn, ssh, _ = mock_remote_env
+
+    # 1. remote_md5 with single quotes in path
+    p1 = "/mnt/sdcard/ports/Don't Starve/game.data"
+    conn.remote_md5(p1)
+    assert any(f"md5sum {shlex.quote(p1)}" in cmd for cmd in ssh.executed_commands)
+
+    # 2. df_mount with single quotes in path
+    p2 = "/mnt/sdcard/Don't Starve"
+    conn.df_mount(p2)
+    assert any(f"df -k {shlex.quote(p2)}" in cmd for cmd in ssh.executed_commands)
+
+    # 3. chmod_x with single quotes in path
+    p3 = "/mnt/sdcard/ROMS/Ports/Don't Starve.sh"
+    conn.chmod_x(p3)
+    assert any(f"chmod +x {shlex.quote(p3)}" in cmd for cmd in ssh.executed_commands)
+
+
+def test_tofu_host_key_policy(tmp_path, monkeypatch):
+    """Verify Trust-On-First-Use (TOFU) host key persistence, verification, and forget."""
+    known_hosts = tmp_path / "known_hosts"
+    auth_file = tmp_path / "wireless_auth.dat"
+    monkeypatch.setattr(wireless, "KNOWN_HOSTS_FILE", known_hosts)
+    monkeypatch.setattr(wireless, "AUTH_FILE", auth_file)
+
+    import paramiko
+    key1 = paramiko.RSAKey.generate(1024)
+    key2 = paramiko.RSAKey.generate(1024)
+
+    # 1. Missing key policy adds key on first connect
+    client = paramiko.SSHClient()
+    info = {"added": False}
+    policy = wireless.TrustOnFirstUsePolicy(known_hosts, on_new_key=lambda h, k: info.update({"added": True}))
+    policy.missing_host_key(client, "muos.local", key1)
+
+    assert info["added"] is True
+    assert known_hosts.exists()
+    hk = paramiko.HostKeys(str(known_hosts))
+    assert "muos.local" in hk
+
+    # 2. Fingerprint format
+    fp = wireless.format_fingerprint(key1)
+    assert fp.startswith("SHA256:")
+
+    # 3. Key mismatch raises ConnectionError
+    wireless.save_saved_credential("muos.local", "root", "secret")
+    assert wireless.get_saved_credential("muos.local") == ("root", "secret")
+
+    with patch("paramiko.SSHClient.connect", side_effect=paramiko.BadHostKeyException("muos.local", key2, key1)):
+        conn = wireless.WirelessConnection()
+        with pytest.raises(ConnectionError, match="Host key verification failed"):
+            conn.connect("muos.local", port=22, username="root", password="pw")
+
+    # 4. Forget device clears known_hosts and auth
+    deleted = wireless.forget_host("muos.local", port=22)
+    assert deleted is True
+    assert wireless.get_saved_credential("muos.local") is None
+    hk_after = paramiko.HostKeys(str(known_hosts))
+    assert "muos.local" not in hk_after
+
+
+def test_unverified_credentials_removed():
+    """Verify unverified credentials (muos:muos / port 2022) were removed."""
+    muos_creds = wireless.CFW_DEFAULT_CREDENTIALS.get("muos", [])
+    assert ("muos", "muos", 2022) not in muos_creds
+    assert muos_creds == [("root", "root", 22)]

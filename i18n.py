@@ -924,6 +924,30 @@ STRINGS: dict[str, dict[str, str]] = {
         "en": "Disconnect",
         "th": "ยกเลิกการเชื่อมต่อ",
     },
+    "wireless.btn_forget": {
+        "en": "Forget Device",
+        "th": "ลืมอุปกรณ์นี้",
+    },
+    "wireless.forget_tooltip": {
+        "en": "Clear saved host key and credentials for this host",
+        "th": "ล้าง Host key และรหัสผ่านที่บันทึกไว้สำหรับโฮสต์นี้",
+    },
+    "wireless.forgot_success": {
+        "en": "Device forgotten: cleared saved host key and credentials for {host}.",
+        "th": "ลืมอุปกรณ์แล้ว: ล้าง Host key และรหัสผ่านที่บันทึกไว้สำหรับ {host} เรียบร้อย",
+    },
+    "wireless.forgot_none": {
+        "en": "No saved host key or credentials found for {host}.",
+        "th": "ไม่พบ Host key หรือรหัสผ่านที่บันทึกไว้สำหรับ {host}",
+    },
+    "wireless.reopen_menu_tip": {
+        "en": "  💡 Reopen the Ports menu on your handheld to see newly added games.",
+        "th": "  💡 เปิดเมนู Ports บนเครื่องเกมใหม่อีกครั้งเพื่อแสดงเกมที่เพิ่งติดตั้ง",
+    },
+    "wireless.reopen_menu_note": {
+        "en": "💡 Reopen the Ports menu on your handheld to see newly installed games",
+        "th": "💡 เปิดเมนู Ports บนเครื่องเกมใหม่อีกครั้งเพื่อแสดงเกมที่เพิ่งติดตั้ง",
+    },
 
     # ------------------------------------------------------------------------
     # Failure hints

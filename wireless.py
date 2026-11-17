@@ -11,7 +11,9 @@ import ctypes
 import hashlib
 import json
 import os
+import posixpath
 import re
+import shlex
 import shutil
 import socket
 import sys
@@ -45,7 +47,6 @@ KNOWN_MDNS_HOSTS = [
 CFW_DEFAULT_CREDENTIALS: dict[str, list[tuple[str, str, int]]] = {
     "muos": [
         ("root", "root", 22),
-        ("muos", "muos", 2022),
     ],
 }
 
@@ -59,6 +60,36 @@ GENERIC_DEFAULT_CREDENTIALS = [
 # --------------------------------------------------------------------------
 
 AUTH_FILE = core.APP_DIR / "wireless_auth.dat"
+KNOWN_HOSTS_FILE = core.APP_DIR / "known_hosts"
+
+
+def format_fingerprint(key: paramiko.PKey) -> str:
+    """Return standard OpenSSH SHA256 fingerprint: SHA256:<base64>."""
+    sha256 = hashlib.sha256(key.asbytes()).digest()
+    b64 = base64.b64encode(sha256).decode("ascii").rstrip("=")
+    return f"SHA256:{b64}"
+
+
+class TrustOnFirstUsePolicy(paramiko.MissingHostKeyPolicy):
+    """Host key policy that trusts the host key on first connect and saves it to known_hosts.
+
+    If a host key changes later, paramiko raises BadHostKeyException automatically
+    because the host was already present in the client host keys with a different key.
+    """
+
+    def __init__(self, known_hosts_file: Path, on_new_key: Callable[[str, paramiko.PKey], None] | None = None):
+        self.known_hosts_file = known_hosts_file
+        self.on_new_key = on_new_key
+
+    def missing_host_key(self, client: paramiko.SSHClient, hostname: str, key: paramiko.PKey) -> None:
+        self.known_hosts_file.parent.mkdir(parents=True, exist_ok=True)
+        client.get_host_keys().add(hostname, key.get_name(), key)
+        try:
+            client.save_host_keys(str(self.known_hosts_file))
+        except Exception:
+            pass
+        if self.on_new_key:
+            self.on_new_key(hostname, key)
 
 
 def _win_dpapi_protect(data: bytes) -> bytes:
@@ -178,12 +209,59 @@ def get_saved_credential(host: str) -> tuple[str, str] | None:
     return None
 
 
+def delete_saved_credential(host: str) -> bool:
+    """Delete saved credential for host. Returns True if deleted."""
+    if not AUTH_FILE.exists():
+        return False
+    try:
+        dec = _win_dpapi_unprotect(AUTH_FILE.read_bytes())
+        records = json.loads(dec.decode("utf-8"))
+        h = host.lower()
+        if h in records:
+            del records[h]
+            enc = _win_dpapi_protect(json.dumps(records).encode("utf-8"))
+            AUTH_FILE.write_bytes(enc)
+            if sys.platform != "win32":
+                AUTH_FILE.chmod(0o600)
+            return True
+    except Exception:
+        pass
+    return False
+
+
+def forget_host(host: str, port: int = 22) -> bool:
+    """Clear saved host keys and credentials for host.
+
+    Used when host key changes due to OS reinstall or device reset.
+    """
+    deleted = False
+    if KNOWN_HOSTS_FILE.exists():
+        try:
+            hk = paramiko.HostKeys(str(KNOWN_HOSTS_FILE))
+            h_lower = host.lower()
+            to_del = []
+            for k in list(hk.keys()):
+                k_norm = k.lower()
+                if k_norm == h_lower or k_norm.startswith(f"[{h_lower}]:"):
+                    to_del.append(k)
+            for k in to_del:
+                del hk[k]
+                deleted = True
+            if to_del:
+                hk.save(str(KNOWN_HOSTS_FILE))
+        except Exception:
+            pass
+    if delete_saved_credential(host):
+        deleted = True
+    return deleted
+
+
 # --------------------------------------------------------------------------
 # Wireless Connection Wrapper
 # --------------------------------------------------------------------------
 
 class WirelessConnection:
-    """Encapsulates paramiko SSH & SFTP connections with keepalive and helpers."""
+    """Encapsulates paramiko SSH & SFTP connections with TOFU host-key verification, keepalive, and helpers."""
 
     def __init__(self, client: paramiko.SSHClient | None = None):
         self.client: paramiko.SSHClient | None = client
@@ -192,6 +270,8 @@ class WirelessConnection:
         self.port: int = 22
         self.username: str = ""
         self.is_default_password: bool = False
+        self.host_key_fingerprint: str = ""
+        self.is_new_host_key: bool = False
 
     def connect(
         self,
@@ -203,21 +283,56 @@ class WirelessConnection:
         keepalive: int = 15,
     ) -> None:
         client = paramiko.SSHClient()
-        client.set_missing_host_key_policy(paramiko.AutoAddPolicy())
-        client.connect(
-            hostname=host,
-            port=port,
-            username=username,
-            password=password,
-            timeout=timeout,
-            banner_timeout=timeout,
-            auth_timeout=timeout,
-            look_for_keys=False,
-            allow_agent=False,
-        )
+        if KNOWN_HOSTS_FILE.exists():
+            try:
+                client.load_host_keys(str(KNOWN_HOSTS_FILE))
+            except Exception:
+                pass
+
+        new_key_meta = {"new": False, "fp": ""}
+
+        def on_first_trust(h: str, key: paramiko.PKey):
+            new_key_meta["new"] = True
+            new_key_meta["fp"] = format_fingerprint(key)
+
+        client.set_missing_host_key_policy(TrustOnFirstUsePolicy(KNOWN_HOSTS_FILE, on_new_key=on_first_trust))
+
+        try:
+            client.connect(
+                hostname=host,
+                port=port,
+                username=username,
+                password=password,
+                timeout=timeout,
+                banner_timeout=timeout,
+                auth_timeout=timeout,
+                look_for_keys=False,
+                allow_agent=False,
+            )
+        except paramiko.BadHostKeyException as e:
+            got_fp = format_fingerprint(e.key)
+            exp_fp = format_fingerprint(e.expected_key)
+            raise ConnectionError(
+                f"Host key verification failed for {host}!\n"
+                f"Expected: {exp_fp}\n"
+                f"Received: {got_fp}\n\n"
+                f"The device's host key has changed. This could indicate an attacker on the network (MITM), "
+                f"or the OS was reinstalled on the handheld.\n"
+                f"If you reinstalled muOS, click 'Forget Device' and reconnect."
+            ) from e
+
         transport = client.get_transport()
         if transport is not None:
             transport.set_keepalive(keepalive)
+            try:
+                server_key = transport.get_remote_server_key()
+                if server_key:
+                    self.host_key_fingerprint = format_fingerprint(server_key)
+            except Exception:
+                pass
+        if not self.host_key_fingerprint and new_key_meta["fp"]:
+            self.host_key_fingerprint = new_key_meta["fp"]
+        self.is_new_host_key = new_key_meta["new"]
 
         self.client = client
         self.host = host
@@ -307,6 +422,30 @@ class WirelessConnection:
                 except (IOError, OSError):
                     pass
 
+    def rmtree(self, remote_path: str) -> None:
+        """Recursively remove a directory and all its contents over SFTP."""
+        if not self.sftp:
+            raise ConnectionError("SFTP not connected")
+        import stat as pystat
+        rp = remote_path.rstrip("/")
+        try:
+            entries = self.sftp.listdir_attr(rp)
+        except (IOError, OSError):
+            return
+        for entry in entries:
+            child = f"{rp}/{entry.filename}"
+            if pystat.S_ISDIR(entry.st_mode):
+                self.rmtree(child)
+            else:
+                try:
+                    self.sftp.remove(child)
+                except (IOError, OSError):
+                    pass
+        try:
+            self.sftp.rmdir(rp)
+        except (IOError, OSError):
+            pass
+
     def put_file_atomic(
         self,
         local_path: Path,
@@ -317,7 +456,7 @@ class WirelessConnection:
         """Upload file via SFTP using atomic write (<remote_path>.part then rename)."""
         if not self.sftp:
             raise ConnectionError("SFTP not connected")
-        parent = os.path.dirname(remote_path)
+        parent = posixpath.dirname(remote_path)
         if parent:
             self.mkdir_p(parent)
 
@@ -342,7 +481,7 @@ class WirelessConnection:
 
     def remote_md5(self, remote_path: str) -> str | None:
         """Compute MD5 of a remote file via md5sum command or reading chunks."""
-        code, out, _ = self.exec(f"md5sum '{remote_path}' 2>/dev/null", timeout=5.0)
+        code, out, _ = self.exec(f"md5sum {shlex.quote(remote_path)} 2>/dev/null", timeout=5.0)
         if code == 0 and out.strip():
             return out.strip().split()[0].lower()
         # Fallback: stream MD5 over SFTP
@@ -362,7 +501,7 @@ class WirelessConnection:
 
     def df_mount(self, path: str) -> tuple[int, int] | None:
         """Get (free_bytes, total_bytes) for mount containing path."""
-        code, out, _ = self.exec(f"df -k '{path}' 2>/dev/null", timeout=5.0)
+        code, out, _ = self.exec(f"df -k {shlex.quote(path)} 2>/dev/null", timeout=5.0)
         if code == 0:
             lines = [line.strip() for line in out.splitlines() if line.strip()]
             if len(lines) >= 2:
@@ -380,7 +519,7 @@ class WirelessConnection:
         self.exec("sync", timeout=10.0)
 
     def chmod_x(self, remote_path: str) -> None:
-        self.exec(f"chmod +x '{remote_path}'", timeout=5.0)
+        self.exec(f"chmod +x {shlex.quote(remote_path)}", timeout=5.0)
 
 
 # --------------------------------------------------------------------------
@@ -411,6 +550,8 @@ class RemoteProbe:
     layout: RemoteLayout
     is_default_password: bool = False
     warning: str | None = None
+    host_key_fingerprint: str = ""
+    is_new_host_key: bool = False
 
 
 # --------------------------------------------------------------------------
@@ -540,6 +681,8 @@ def probe_remote(conn: WirelessConnection) -> RemoteProbe:
         layout=layout,
         is_default_password=conn.is_default_password,
         warning=warn_msg,
+        host_key_fingerprint=conn.host_key_fingerprint,
+        is_new_host_key=conn.is_new_host_key,
     )
 
 
@@ -720,8 +863,24 @@ def transfer_port_wireless(
         # Clean remote port directories if requested
         if clean:
             for d in port.dirs:
-                remote_d = f"{layout.ports_dir}/{d}"
-                conn.exec(f"rm -rf '{remote_d}'", timeout=5.0)
+                if not d or not isinstance(d, str) or not d.strip():
+                    continue
+                d_name = d.strip()
+                # Reject empty, absolute, .., or /-containing names
+                if d_name.startswith("/") or d_name.startswith("\\") or ".." in d_name or "/" in d_name or "\\" in d_name:
+                    log(f"  ⚠ Skipping unsafe port directory name: {d!r}")
+                    continue
+                # Build path with posixpath and check it starts with ports_dir + '/'
+                remote_d = posixpath.normpath(posixpath.join(layout.ports_dir, d_name))
+                expected_prefix = layout.ports_dir.rstrip("/") + "/"
+                if not remote_d.startswith(expected_prefix):
+                    log(f"  ⚠ Skipping unsafe port directory outside ports: {remote_d!r}")
+                    continue
+                # Prefer SFTP removal over shell command
+                try:
+                    conn.rmtree(remote_d)
+                except Exception:
+                    conn.exec(f"rm -rf {shlex.quote(remote_d)}", timeout=5.0)
 
         # 3. SFTP Upload Port directories
         log("  ⇢ Uploading port files over SFTP…")
@@ -811,10 +970,8 @@ def transfer_port_wireless(
 
 
 def finalize_wireless_session(conn: WirelessConnection, cfw_id: str, log: Log) -> None:
-    """Run sync and muOS game list refresh command."""
+    """Run sync on handheld filesystem."""
     log("  ⇢ Syncing filesystem on handheld…")
     conn.sync()
-
-    log("  ⇢ Triggering muOS game-list refresh…")
-    conn.exec("curl -s -X POST http://127.0.0.1/api/catalogue/refresh || true")
+    log(_tr("wireless.reopen_menu_tip", "  💡 Reopen the Ports menu on your handheld to see newly added games."))
     log("  ✔ Finished wireless transfer.")

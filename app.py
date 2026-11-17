@@ -1814,6 +1814,11 @@ class WirelessConnectDialog(QDialog):
         self.btn_disco = QPushButton("🔍 Discover")
         self.btn_disco.clicked.connect(self._start_discovery)
         host_row.addWidget(self.btn_disco)
+
+        self.btn_forget = QPushButton(t("wireless.btn_forget", "Forget Device"))
+        self.btn_forget.setToolTip(t("wireless.forget_tooltip", "Clear saved host key and credentials for this host"))
+        self.btn_forget.clicked.connect(self._forget_device)
+        host_row.addWidget(self.btn_forget)
         layout.addLayout(host_row)
 
         # Port
@@ -1920,6 +1925,25 @@ class WirelessConnectDialog(QDialog):
             self.user_txt.setText(u)
             self.pwd_txt.setText(p)
 
+    def _forget_device(self):
+        host_raw = self.host_combo.currentText().split()[0].strip()
+        if not host_raw:
+            return
+        port = 22
+        try:
+            port = int(self.port_txt.text().strip())
+        except ValueError:
+            pass
+        deleted = wireless.forget_host(host_raw, port=port)
+        self.user_txt.setText("root")
+        self.pwd_txt.setText("")
+        self.result_panel.hide()
+        self.btn_use.hide()
+        if deleted:
+            self.status_lbl.setText(t("wireless.forgot_success", "Device forgotten: cleared saved host key and credentials for {host}.", host=host_raw))
+        else:
+            self.status_lbl.setText(t("wireless.forgot_none", "No saved host key or credentials found for {host}.", host=host_raw))
+
     def _start_discovery(self):
         self.status_lbl.setText(t("wireless.scanning", "Searching local network for handhelds…"))
         self.btn_disco.setEnabled(False)
@@ -2000,7 +2024,10 @@ class WirelessConnectDialog(QDialog):
             else:
                 stor_txt = f"Storage:\n  • {probe.layout.ports_dir} ({free_p} free)"
 
-            self.res_details.setText(f"CFW Version: {probe.cfw_version}\n{pm_txt}\n{stor_txt}")
+            hk_txt = f"\nHost Key: {probe.host_key_fingerprint}" if probe.host_key_fingerprint else ""
+            if probe.is_new_host_key:
+                hk_txt += " (Trusted & Saved)"
+            self.res_details.setText(f"CFW Version: {probe.cfw_version}\n{pm_txt}\n{stor_txt}{hk_txt}")
             if probe.warning:
                 self.res_warn.setText(probe.warning)
                 self.res_warn.show()
@@ -2012,7 +2039,15 @@ class WirelessConnectDialog(QDialog):
 
         def on_fail(err):
             self.btn_connect.setEnabled(True)
-            self.status_lbl.setText(f"✖ Connection failed: {err.splitlines()[0]}")
+            msg = err.strip()
+            first_line = msg.splitlines()[0] if msg else "Unknown error"
+            self.status_lbl.setText(f"✖ Connection failed: {first_line}")
+            if "host key" in msg.lower():
+                self.res_title.setText("Host Key Verification Failed")
+                self.res_title.setStyleSheet("font-weight:700;color:#f87171;font-size:14px;")
+                self.res_details.setText(msg)
+                self.res_warn.hide()
+                self.result_panel.show()
 
         w = Worker(job)
         w.finished_ok.connect(on_ok)
@@ -2448,7 +2483,7 @@ class Main(QMainWindow):
 
         if is_wl and ok and t_target.probe:
             notes.insert(0, f"✔ Installed {len(ok)} ports over Wi-Fi to {t_target.probe.device_name}")
-            notes.insert(1, "✔ File permissions set and game list refreshed on handheld")
+            notes.insert(1, t("wireless.reopen_menu_note", "💡 Reopen the Ports menu on your handheld to see newly installed games"))
         elif t_target.cfw.id == "muos" and core.is_muos_card2(t_target.root) and t_target.system_root is None and ok:
             ans = QMessageBox.question(
                 self, APP_NAME,
