@@ -69,7 +69,7 @@ def clean_steam_auth(tmp_path):
 @pytest.fixture
 def h700_sp_device() -> Device:
     """RG35XX SP handheld (muOS, Anbernic H700)."""
-    return next(d for d in DEVICES if d.id == "rg35xxsp")
+    return next(d for d in DEVICES if d.id == "h700-nosticks")
 
 
 # --------------------------------------------------------------------------
