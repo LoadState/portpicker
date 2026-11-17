@@ -621,6 +621,27 @@ def fake_depot_download(
 # Download Entry Point (Strict Separation Between Fake and Real Modes)
 # --------------------------------------------------------------------------
 
+def steam_cache_dir(recipe: SteamDepotRecipe) -> Path:
+    key = "_".join(x for x in (recipe.appid, recipe.depot or "all", recipe.manifest or recipe.branch or "public", recipe.os) if x)
+    return steam_auth.APP_DIR / "cache" / "steam" / re.sub(r"[^\w.-]", "_", key)
+
+
+def _copy_from_cache(cache_dir: Path, dest_dir: Path, cancel: Callable[[], bool] | None = None) -> None:
+    """Copy downloaded game files to dest_dir, leaving out DepotDownloader's own .DepotDownloader state folder."""
+    for src in cache_dir.rglob("*"):
+        if cancel and cancel():
+            raise InterruptedError("cancelled")
+        rel = src.relative_to(cache_dir)
+        if rel.parts and rel.parts[0] == ".DepotDownloader":
+            continue
+        dst = dest_dir / rel
+        if src.is_dir():
+            dst.mkdir(parents=True, exist_ok=True)
+        else:
+            dst.parent.mkdir(parents=True, exist_ok=True)
+            shutil.copy2(src, dst)
+
+
 def download_steam_files(
     recipe: SteamDepotRecipe,
     dest_dir: Path,
@@ -665,9 +686,13 @@ def download_steam_files(
             temp_fl = Path(fl_name)
             write_filelist(recipe, temp_fl)
 
+        # Download into a persistent cache, then copy to dest_dir: on a retry (e.g. the Wi-Fi upload failed)
+        # DepotDownloader only verifies the files it already has instead of fetching ~0.5 GB again.
+        cache_dir = steam_cache_dir(recipe)
+        cache_dir.mkdir(parents=True, exist_ok=True)
         cmd = [str(exe)] + build_depotdownloader_args(
             recipe=recipe,
-            dest_dir=dest_dir,
+            dest_dir=cache_dir,
             filelist_path=temp_fl,
             account_name=account_name,
             remember_password=True,
@@ -683,6 +708,7 @@ def download_steam_files(
             cancel=cancel,
         )
 
+        _copy_from_cache(cache_dir, dest_dir, cancel)
         if log:
             log("  ✔ DepotDownloader completed successfully.")
         return dest_dir

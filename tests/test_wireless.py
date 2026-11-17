@@ -637,3 +637,44 @@ def test_connect_with_credentials_or_defaults_muos():
         assert call_kwargs["password"] == "muos"
         assert conn.is_default_password is True
 
+
+
+def test_reconnects_when_session_dropped_before_upload(mock_remote_env, monkeypatch):
+    # Hardware test 2026-11-18: the session dropped while Steam downloaded Stardew ("Server connection dropped")
+    conn, ssh, sftp = mock_remote_env
+    conn._reconnect_args = dict(host="192.168.1.100", port=2022, username="muos", password="muos", timeout=1, keepalive=15)
+    dead = MagicMock()
+    dead.is_active.return_value = False
+    monkeypatch.setattr(ssh, "get_transport", lambda: dead)
+    calls = []
+
+    def fake_connect(**kw):
+        calls.append(kw["host"])
+        conn.client = MockSSHClient(sftp)
+        conn.sftp = sftp
+
+    monkeypatch.setattr(conn, "connect", fake_connect)
+    logs = []
+    conn.ensure_connected(logs.append)
+    assert calls == ["192.168.1.100"] and conn.is_alive()
+    assert any("reconnecting" in l for l in logs)
+
+
+def test_upload_retries_after_drop(mock_remote_env, monkeypatch, tmp_path):
+    conn, ssh, sftp = mock_remote_env
+    conn._reconnect_args = dict(host="h", port=2022, username="muos", password="muos", timeout=1, keepalive=15)
+    f = tmp_path / "a.bin"
+    f.write_bytes(b"x" * 10)
+    real_once = conn._put_file_atomic_once
+    state = {"n": 0}
+
+    def flaky(*a, **kw):
+        state["n"] += 1
+        if state["n"] == 1:
+            raise paramiko.SSHException("Server connection dropped: ")
+        return real_once(*a, **kw)
+
+    monkeypatch.setattr(conn, "_put_file_atomic_once", flaky)
+    monkeypatch.setattr(conn, "ensure_connected", lambda log=None: None)
+    conn.put_file_atomic(f, "/Secondary Storage/ports/x/a.bin")
+    assert state["n"] == 2
