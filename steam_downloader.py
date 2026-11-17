@@ -179,6 +179,7 @@ class SteamDepotRecipe:
     branch: str = "public"               # branch, e.g. "public"
     filelist: tuple[str, ...] = ("*",)   # patterns passed to -filelist
     os: str = "windows"                  # target OS depot ("windows" or "linux")
+    manifest: str = ""                   # pin a depot manifest (the version the port was made for)
     post_process: str = ""               # optional action
     note: str = ""
 
@@ -206,6 +207,18 @@ STEAM_DEPOT_RECIPES: dict[str, SteamDepotRecipe] = {
         filelist=("data.win", "*.ogg"),
         os="windows",
         note="Undertale assets (data.win, *.ogg) (https://portmaster.games/detail.html?name=undertale)",
+    ),
+    # 3. Stardew Valley (mainline port): the whole Windows depot, pinned to the manifest the port README gives
+    # (`download_depot 413150 413151 4278718763097142923`), copied into ports/stardewvalleymainline/gamedata.
+    # README: https://github.com/PortsMaster/PortMaster-New/blob/main/ports/stardewvalleymainline/README.md
+    "stardewvalleymainline": SteamDepotRecipe(
+        appid="413150",
+        dest="stardewvalleymainline/gamedata",
+        depot="413151",
+        manifest="4278718763097142923",
+        filelist=("*",),
+        os="windows",
+        note="Stardew Valley Windows depot, full (~0.6 GB) (PortMaster stardewvalleymainline README)",
     ),
 }
 
@@ -258,6 +271,8 @@ def build_depotdownloader_args(
         args += ["-beta", str(recipe.branch)]
     if recipe.os:
         args += ["-os", recipe.os]
+    if recipe.manifest:
+        args += ["-manifest", str(recipe.manifest)]
     args += ["-dir", str(dest_dir)]
     if filelist_path:
         args += ["-filelist", str(filelist_path)]

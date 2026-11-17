@@ -2525,7 +2525,7 @@ class Main(QMainWindow):
     def _catalog_ready(self, res):
         ports, self.utils = res
         if FREE_ONLY:
-            self.catalog = [p for p in ports if p.is_free]
+            self.catalog = [p for p in ports if p.is_free or p.stem in steam_downloader.STEAM_DEPOT_RECIPES]
         else:
             self.catalog = ports
         self.net.setText(f"PortMaster: {len(self.catalog)} ports")
@@ -2558,7 +2558,7 @@ class Main(QMainWindow):
                     p.beta = core.beta_results_for(p, dev, cfw, beta_rows)
 
             if FREE_ONLY:
-                allp = [p for p in self.catalog if p.is_free]
+                allp = [p for p in self.catalog if p.is_free or p.stem in steam_downloader.STEAM_DEPOT_RECIPES]
                 core.classify(allp, dev, cfw, status)
                 attach_beta(allp)
                 return allp
