@@ -2,12 +2,12 @@
 
 Implements the official Steam authentication flow for T-023:
 1. DepotDownloader QR flow (-qr -remember-password) for SteamKit2 session persistence.
-2. Steam Web API (IAuthenticationService/BeginAuthSessionViaQR & PollAuthSessionStatus)
-   supporting QR rotation (new_challenge_url) and polling intervals.
+   One login path only: DepotDownloader -qr.
+2. Renders DepotDownloader terminal block QR codes into crisp, scannable QPixmaps.
 3. Windows DPAPI (CryptProtectData / CryptUnprotectData) for credential storage.
    Refuses to save plaintext on non-Windows.
+   Stores only the account name (which -username needs) — never stores passwords or tokens.
 4. Complete logout functionality that purges DPAPI storage and DepotDownloader account.config.
-PortPicker never asks for or stores the user's Steam password.
 """
 from __future__ import annotations
 
@@ -17,13 +17,10 @@ import json
 import os
 import sys
 import time
-from dataclasses import dataclass
 from pathlib import Path
 from typing import Callable
-import requests
 
 APP_DIR = Path(os.environ.get("LOCALAPPDATA", Path.home() / ".cache")) / "PortPicker"
-STEAM_API_BASE = "https://api.steampowered.com/IAuthenticationService"
 STEAM_AUTH_FILE = APP_DIR / "steam_auth.dat"
 
 # Test mode hook enabled only during non-Windows unit test execution
@@ -121,16 +118,14 @@ def _win_dpapi_unprotect(data: bytes) -> bytes:
         kernel32.LocalFree(out_blob.pbData)
 
 
-def save_steam_credentials(account_name: str, refresh_token: str = "", steam_id: str = "") -> None:
-    """Persist Steam credentials securely using DPAPI. Never stores password.
+def save_steam_credentials(account_name: str) -> None:
+    """Persist Steam account name securely using DPAPI. Never stores password or tokens.
     
     Refuses on non-Windows unless test mode is active.
     """
     APP_DIR.mkdir(parents=True, exist_ok=True)
     payload = {
         "account_name": account_name,
-        "refresh_token": refresh_token,
-        "steam_id": steam_id,
         "updated_at": int(time.time()),
     }
     raw = json.dumps(payload).encode("utf-8")
@@ -197,146 +192,127 @@ def is_steam_authenticated() -> bool:
 
 
 # --------------------------------------------------------------------------
-# Steam QR Auth Flow (Official Steam Web API)
+# QR Block Text to Module Grid & QPixmap Conversion
 # --------------------------------------------------------------------------
 
-@dataclass
-class QRSession:
-    client_id: str
-    request_id: str
-    challenge_url: str
-    interval: float = 5.0
+def qr_ascii_to_modules(lines: list[str]) -> list[list[bool]]:
+    """Convert ASCII/Unicode block-character QR lines into a 2D boolean module grid.
+
+    Each character cell represents up to two vertical modules using half-blocks:
+      - ' ' or '\xa0' (space): light/light
+      - '█' (full block): dark/dark
+      - '▀' (upper half block): dark top, light bottom
+      - '▄' (lower half block): light top, dark bottom
+
+    Automatically detects terminal inversion:
+      - When inverted (e.g. black background terminal where quiet zone is drawn with '█'):
+        '█' represents light (quiet zone) and ' ' represents dark.
+      - When normal:
+        ' ' represents light and '█' represents dark.
+
+    Returns:
+      A 2D list of bools [row][col], where True represents a dark module (black)
+      and False represents a light module (white).
+    """
+    cleaned = [l.rstrip("\r\n") for l in lines]
+    while cleaned and not cleaned[0]:
+        cleaned.pop(0)
+    while cleaned and not cleaned[-1]:
+        cleaned.pop()
+    if not cleaned:
+        return []
+
+    width = max(len(l) for l in cleaned)
+    padded = [l.ljust(width) for l in cleaned]
+
+    # Detect inverted rendering (quiet zone = '█', or finder pattern = '▄▄▄▄▄')
+    first_line_blocks = sum(1 for ch in padded[0] if ch == "█")
+    has_inverted_finder = any("▄▄▄▄▄" in l for l in padded[:5])
+    is_inverted = (first_line_blocks > width / 2) or has_inverted_finder
+
+    modules: list[list[bool]] = []
+    for line in padded:
+        row_top: list[bool] = []
+        row_bot: list[bool] = []
+        for ch in line:
+            if not is_inverted:
+                # Normal mode: True = dark/black, False = light/white
+                if ch in (" ", "\xa0"):
+                    top, bot = False, False
+                elif ch == "█":
+                    top, bot = True, True
+                elif ch == "▀":
+                    top, bot = True, False
+                elif ch == "▄":
+                    top, bot = False, True
+                else:
+                    top, bot = False, False
+            else:
+                # Inverted mode: '█' is white/light (False), ' ' is black/dark (True)
+                if ch == "█":
+                    top, bot = False, False
+                elif ch in (" ", "\xa0"):
+                    top, bot = True, True
+                elif ch == "▀":
+                    top, bot = False, True
+                elif ch == "▄":
+                    top, bot = True, False
+                else:
+                    top, bot = False, False
+            row_top.append(top)
+            row_bot.append(bot)
+        modules.append(row_top)
+        modules.append(row_bot)
+
+    return modules
 
 
-class SteamAuthService:
-    """Handles Steam QR code authentication session lifecycle."""
-
-    def __init__(self, mock: bool = False):
-        self.mock = mock or bool(os.environ.get("PORTPICKER_MOCK_STEAM_AUTH"))
-        self._mock_approved = False
-
-    def begin_qr_session(self, friendly_name: str = "PortPicker") -> QRSession:
-        """Start a new QR auth session with Steam.
-        
-        Returns QRSession with client_id, request_id, challenge_url, and polling interval.
-        """
-        if self.mock:
-            return QRSession(
-                client_id="mock_client_12345",
-                request_id="mock_request_67890",
-                challenge_url="https://s.team/q/1/mock-challenge-session-url",
-                interval=2.0,
-            )
-
-        url = f"{STEAM_API_BASE}/BeginAuthSessionViaQR/v1/"
-        data = {
-            "device_friendly_name": friendly_name,
-            "platform_type": 2,  # Desktop client
-            "website_id": "Community",
-        }
-        res = requests.post(url, data=data, timeout=10)
-        res.raise_for_status()
-        resp = res.json().get("response", {})
-        client_id = str(resp.get("client_id", ""))
-        request_id = str(resp.get("request_id", ""))
-        challenge_url = resp.get("challenge_url", "")
-        interval = float(resp.get("interval", 5.0))
-        if not challenge_url or not client_id:
-            raise ValueError(f"Steam QR session initiation failed: invalid response {resp}")
-        return QRSession(client_id, request_id, challenge_url, interval)
-
-    def poll_qr_status(self, session: QRSession) -> dict:
-        """Poll Steam to check if the user approved the QR login in their mobile app.
-        
-        Handles:
-          - Approved status: persists credentials and returns account details
-          - new_challenge_url: QR rotation handled seamlessly
-          - new_client_id: session client_id update
-          - Expired / Error status
-        """
-        if self.mock:
-            if getattr(self, "_mock_approved", False):
-                account = "MockUser"
-                token = "mock_refresh_token_abcdef123456"
-                save_steam_credentials(account, token, "76561198000000000")
-                return {
-                    "status": "approved",
-                    "account_name": account,
-                    "refresh_token": token,
-                    "steam_id": "76561198000000000",
-                }
-            return {"status": "pending"}
-
-        url = f"{STEAM_API_BASE}/PollAuthSessionStatus/v1/"
-        data = {
-            "client_id": session.client_id,
-            "request_id": session.request_id,
-        }
-        try:
-            res = requests.post(url, data=data, timeout=10)
-            res.raise_for_status()
-            resp = res.json().get("response", {})
-
-            if resp.get("had_session_expired"):
-                return {"status": "expired"}
-
-            # Handle challenge rotation if Steam refreshed the QR
-            new_url = resp.get("new_challenge_url")
-            if new_url:
-                session.challenge_url = new_url
-            new_cid = resp.get("new_client_id")
-            if new_cid:
-                session.client_id = str(new_cid)
-
-            refresh_token = resp.get("refresh_token")
-            if refresh_token:
-                account_name = resp.get("account_name", "")
-                steam_id = str(resp.get("steam_id", ""))
-                save_steam_credentials(account_name, refresh_token, steam_id)
-                return {
-                    "status": "approved",
-                    "account_name": account_name,
-                    "refresh_token": refresh_token,
-                    "steam_id": steam_id,
-                }
-
-            if new_url:
-                return {"status": "rotated", "new_challenge_url": new_url}
-
-            return {"status": "pending"}
-        except Exception as e:
-            return {"status": "error", "error": str(e)}
-
-
-# --------------------------------------------------------------------------
-# QR Rendering
-# --------------------------------------------------------------------------
-
-def generate_qr_pixmap(url: str, size: int = 220):
-    """Render a challenge URL as a QPixmap using PySide6 if available."""
+def qr_modules_to_pixmap(modules: list[list[bool]], target_size: int = 240):
+    """Render a 2D boolean module grid as a crisp QPixmap."""
+    if not modules or not modules[0]:
+        return None
     try:
-        import qrcode
-        from PySide6.QtGui import QImage, QPainter, QColor, QPixmap
         from PySide6.QtCore import Qt
+        from PySide6.QtGui import QColor, QImage, QPainter, QPixmap
+        from PySide6.QtWidgets import QApplication
 
-        qr = qrcode.QRCode(border=1)
-        qr.add_data(url)
-        qr.make(fit=True)
-        matrix = qr.get_matrix()
-        n = len(matrix)
-        cell_size = max(1, size // n)
-        total_px = n * cell_size
+        # Ensure QApplication instance exists for QPixmap operations
+        _ = QApplication.instance() or QApplication([])
 
-        img = QImage(total_px, total_px, QImage.Format_RGB32)
+        h = len(modules)
+        w = len(modules[0])
+        cell_size = max(1, target_size // max(h, w))
+        img_w = w * cell_size
+        img_h = h * cell_size
+
+        img = QImage(img_w, img_h, QImage.Format_RGB32)
         img.fill(QColor("white"))
+
         painter = QPainter(img)
         painter.setPen(Qt.NoPen)
         painter.setBrush(QColor("black"))
-        for r in range(n):
-            for c in range(n):
-                if matrix[r][c]:
+        for r in range(h):
+            for c in range(w):
+                if modules[r][c]:
                     painter.drawRect(c * cell_size, r * cell_size, cell_size, cell_size)
         painter.end()
-        return QPixmap.fromImage(img)
+
+        pix = QPixmap.fromImage(img)
+        if target_size > 0 and (img_w != target_size or img_h != target_size):
+            pix = pix.scaled(
+                target_size,
+                target_size,
+                Qt.KeepAspectRatio,
+                Qt.FastTransformation,  # Crisp nearest-neighbor scaling for barcode/QR readability
+            )
+        return pix
     except Exception:
         return None
+
+
+def qr_ascii_to_pixmap(lines: list[str], target_size: int = 240):
+    """Convert DepotDownloader block-character QR lines directly into a QPixmap."""
+    modules = qr_ascii_to_modules(lines)
+    if not modules:
+        return None
+    return qr_modules_to_pixmap(modules, target_size=target_size)

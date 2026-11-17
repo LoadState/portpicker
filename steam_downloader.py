@@ -9,7 +9,7 @@ Meets T-023 card requirements:
 3. Always passes stdin=subprocess.DEVNULL to prevent interactive hangs.
 4. Non-blocking threaded output reading with responsive cancellation and inactivity watchdog.
 5. Strict mode separation: never silently falls back to mock files in production.
-6. Verified recipes trimmed to 1–2 ports (Balatro, Undertale), tested on RG35XX SP/H (muOS H700).
+6. Recipes trimmed to 1–2 ports (Balatro, Undertale); untested, needs hardware test on RG35XX SP/H.
 """
 from __future__ import annotations
 
@@ -64,10 +64,22 @@ def verify_file_sha256(path: Path, expected_hash: str) -> bool:
 
 
 def find_depot_downloader() -> Path | None:
-    """Find the DepotDownloader executable path if installed on the system."""
-    env_p = os.environ.get("PORTPICKER_DEPOT_DOWNLOADER")
-    if env_p and Path(env_p).is_file():
-        return Path(env_p)
+    """Find the DepotDownloader executable path.
+
+    Security: Only runs our own pinned copy in tools/DepotDownloader_3.4.0/.
+    Refuses unversioned tools/ binaries and PATH binaries.
+    PORTPICKER_DEPOT_DOWNLOADER environment variable is accepted ONLY during tests
+    (when PORTPICKER_TEST_MODE, steam_auth._TEST_MODE, or PORTPICKER_FAKE_DEPOT_DOWNLOADER is set).
+    """
+    is_test = (
+        getattr(steam_auth, "_TEST_MODE", False)
+        or bool(os.environ.get("PORTPICKER_TEST_MODE"))
+        or bool(os.environ.get("PORTPICKER_FAKE_DEPOT_DOWNLOADER"))
+    )
+    if is_test:
+        env_p = os.environ.get("PORTPICKER_DEPOT_DOWNLOADER")
+        if env_p and Path(env_p).is_file():
+            return Path(env_p)
 
     tools_dir = steam_auth.APP_DIR / "tools" / f"DepotDownloader_{DEPOT_DOWNLOADER_VERSION}"
     candidate_name = "DepotDownloader.exe" if sys.platform == "win32" else "DepotDownloader"
@@ -75,13 +87,7 @@ def find_depot_downloader() -> Path | None:
     if candidate.is_file():
         return candidate
 
-    # Check older/unversioned tools folder
-    unversioned = steam_auth.APP_DIR / "tools" / candidate_name
-    if unversioned.is_file():
-        return unversioned
-
-    found = shutil.which("DepotDownloader") or shutil.which("DepotDownloader.exe")
-    return Path(found) if found else None
+    return None
 
 
 def ensure_depot_downloader(
@@ -162,7 +168,7 @@ def ensure_depot_downloader(
 
 
 # --------------------------------------------------------------------------
-# Recipes for Ports needing Steam files (Trimmed to 1–2 verified & cited)
+# Recipes for Ports needing Steam files (Trimmed to 1–2 ports; untested, needs hardware test)
 # --------------------------------------------------------------------------
 
 @dataclass(frozen=True)
@@ -177,7 +183,7 @@ class SteamDepotRecipe:
     note: str = ""
 
 
-# Verified on RG35XX SP/H (Anbernic H700 with muOS)
+# Untested; needs hardware test (RG35XX SP/H Anbernic H700 with muOS)
 STEAM_DEPOT_RECIPES: dict[str, SteamDepotRecipe] = {
     # 1. Balatro: requires Balatro.exe (Windows depot 2379781)
     # PortMaster: https://portmaster.games/detail.html?name=balatro
@@ -377,14 +383,22 @@ def run_depot_downloader_qr_login(
     is_fake = fake_mode if fake_mode is not None else bool(os.environ.get("PORTPICKER_FAKE_DEPOT_DOWNLOADER"))
 
     if is_fake:
-        # Mock QR rendering & approval simulation
+        # Mock QR rendering & approval simulation with valid half-block QR lines
         mock_qr = [
-            "███████████████████████",
-            "█ ▄▄▄▄▄ █▀▄█ █ ▄▄▄▄▄ █",
-            "█ █   █ █▄ ▀▄█ █   █ █",
-            "█ █▄▄▄█ █ █ ▄█ █▄▄▄█ █",
-            "█▄▄▄▄▄▄▄█ █ █ █▄▄▄▄▄▄▄█",
-            "███████████████████████",
+            "█▀▀▀▀▀▀▀█▀█▀██▀█▀██▀▀▀▀▀▀▀█",
+            "█ █▀▀▀█ ██▀▀██▄ █▄█ █▀▀▀█ █",
+            "█ █   █ █ ▄ ▀▄▄▀▀▄█ █   █ █",
+            "█ ▀▀▀▀▀ █ █▀▄▀█▀█ █ ▀▀▀▀▀ █",
+            "█▀███▀█▀▀ ▄▀▄▄█▄▄ ▀▀▀▀▀██▀█",
+            "█▄▀▄█▀▄▀██▀▄▄ █  ▄█▀   ▀▄██",
+            "██ ▀▄▀▄▀▀  ▄  █▄▀█  ██▀  ▀█",
+            "█▄██▀▀▀▀ ▀ ▀██▀  █▄█▀ ▀▀▄██",
+            "█▀▀▄▀▄▀▀▀▄██▀▄█▄ ▀ ▀  ▀ ▄██",
+            "█▀▀▀▀▀▀▀█ ▄ ▀  ▄█ █▀█ █████",
+            "█ █▀▀▀█ █▀▄ ▄▀█▄█ ▀▀▀   ▀ █",
+            "█ █   █ ██ ███▀▄ ▀  ▄█▀▄ ▄█",
+            "█ ▀▀▀▀▀ █▀██▀ ▀  █▀▀▄▄▄  ▀█",
+            "▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀▀",
         ]
         on_qr_lines(mock_qr)
         if log:
@@ -397,7 +411,7 @@ def run_depot_downloader_qr_login(
             time.sleep(0.1)
 
         user = "MockUser"
-        steam_auth.save_steam_credentials(user, "mock_token")
+        steam_auth.save_steam_credentials(user)
         on_approved(user)
         if log:
             log(f"  ✔ [Mock Steam] Approved as {user}")

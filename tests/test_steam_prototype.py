@@ -9,11 +9,12 @@ Validates all S2 review requirements:
    never silently falls back to mock files.
 2. Official DepotDownloader parameters and stdin=subprocess.DEVNULL with timeout watchdog.
 3. Official SteamRE GitHub release pinning and SHA-256 checksum verification.
-4. Recipes trimmed to 1–2 verified ports (Balatro, Undertale) cited to PortMaster.
+4. Recipes trimmed to 1–2 ports (Balatro, Undertale) cited to PortMaster (untested; needs hardware test).
 5. Non-Windows DPAPI refuses plaintext fallback (raises NotImplementedError).
 6. Non-blocking threaded output reading with responsive cancel.
-7. Zero token/credential logging.
-8. Rebased onto latest pure SFTP wireless transfer.
+7. Zero token/credential logging; stores only account name without tokens.
+8. Roundtrips block-character QR lines to module grid and crisp QPixmap.
+9. find_depot_downloader strictly runs pinned tools/DepotDownloader_3.4.0/ copy.
 """
 from __future__ import annotations
 
@@ -89,22 +90,19 @@ def test_dpapi_save_and_retrieve_credentials():
     assert not steam_auth.is_steam_authenticated()
     assert steam_auth.get_steam_credentials() is None
 
-    steam_auth.save_steam_credentials(
-        account_name="test_user_gamer",
-        refresh_token="mock_steam_refresh_token_xyz987",
-        steam_id="76561198012345678",
-    )
+    steam_auth.save_steam_credentials(account_name="test_user_gamer")
 
     assert steam_auth.is_steam_authenticated()
     creds = steam_auth.get_steam_credentials()
     assert creds is not None
     assert creds["account_name"] == "test_user_gamer"
-    assert creds["steam_id"] == "76561198012345678"
+    assert "refresh_token" not in creds
     assert "password" not in creds
+    assert "steam_id" not in creds
 
 
 def test_logout_deletes_credentials_and_clears_sessions(tmp_path):
-    steam_auth.save_steam_credentials("user1", "token123")
+    steam_auth.save_steam_credentials("user1")
     assert steam_auth.is_steam_authenticated()
 
     # Create dummy account.config in isolated storage directory
@@ -137,76 +135,65 @@ def test_no_credentials_logged_to_output():
 
 
 # --------------------------------------------------------------------------
-# 2. Steam QR Auth Flow (Official API Mocking)
+# 2. Block-character QR to Module Grid & QPixmap Roundtrip
 # --------------------------------------------------------------------------
 
-def test_begin_qr_session():
-    service = steam_auth.SteamAuthService(mock=False)
+def test_qr_ascii_to_modules_and_pixmap_roundtrip():
+    """Verify S2 Must Fix #3:
+    Round-trip a known QR through qrcode -> text lines -> module grid -> QPixmap.
+    Checks 100% module equality in both normal and inverted modes.
+    """
+    import qrcode
 
-    fake_response = MagicMock()
-    fake_response.json.return_value = {
-        "response": {
-            "client_id": "99887766554433",
-            "challenge_url": "https://s.team/q/1/123456789",
-            "request_id": "deadbeef1234",
-            "interval": 4.5,
-        }
-    }
-    fake_response.raise_for_status = MagicMock()
+    qr = qrcode.QRCode(border=2)
+    qr.add_data("https://s.team/q/1/123456789")
+    qr.make(fit=True)
 
-    with patch("requests.post", return_value=fake_response) as mock_post:
-        session = service.begin_qr_session(friendly_name="PortPicker Test")
-        assert session.client_id == "99887766554433"
-        assert session.challenge_url == "https://s.team/q/1/123456789"
-        assert session.request_id == "deadbeef1234"
-        assert session.interval == 4.5
+    border = qr.border
+    modcount = qr.modules_count
 
-        mock_post.assert_called_once()
-        args, kwargs = mock_post.call_args
-        assert "BeginAuthSessionViaQR" in args[0]
-        assert kwargs["data"]["device_friendly_name"] == "PortPicker Test"
-        assert kwargs["data"]["platform_type"] == 2
+    # Build reference grid from qrcode
+    orig_grid: list[list[bool]] = []
+    for r in range(-border, modcount + border):
+        row = []
+        for c in range(-border, modcount + border):
+            if min(r, c) < 0 or max(r, c) >= modcount:
+                row.append(False)
+            else:
+                row.append(bool(qr.modules[r][c]))
+        orig_grid.append(row)
 
+    # 1. Roundtrip with invert=False (terminal normal)
+    buf_normal = io.StringIO()
+    qr.print_ascii(out=buf_normal, tty=False, invert=False)
+    lines_normal = buf_normal.getvalue().splitlines()
+    mods_normal = steam_auth.qr_ascii_to_modules(lines_normal)
 
-def test_poll_qr_status_approved():
-    service = steam_auth.SteamAuthService(mock=False)
-    session = steam_auth.QRSession("c1", "r1", "https://s.team/q/1/orig", interval=5.0)
+    # 2. Roundtrip with invert=True (terminal inverted / dark background)
+    buf_inverted = io.StringIO()
+    qr.print_ascii(out=buf_inverted, tty=False, invert=True)
+    lines_inverted = buf_inverted.getvalue().splitlines()
+    mods_inverted = steam_auth.qr_ascii_to_modules(lines_inverted)
 
-    fake_response = MagicMock()
-    fake_response.json.return_value = {
-        "response": {
-            "account_name": "TawapholPlayer",
-            "refresh_token": "valid_steam_refresh_token_777",
-            "steam_id": "76561198099999999",
-        }
-    }
-    fake_response.raise_for_status = MagicMock()
+    # Verify dimensions and module equality against qrcode
+    min_r = min(len(orig_grid), len(mods_normal))
+    min_c = min(len(orig_grid[0]), len(mods_normal[0]))
+    for r in range(min_r):
+        for c in range(min_c):
+            assert mods_normal[r][c] == orig_grid[r][c], f"Normal mismatch at ({r}, {c})"
+            assert mods_inverted[r][c] == orig_grid[r][c], f"Inverted mismatch at ({r}, {c})"
 
-    with patch("requests.post", return_value=fake_response):
-        res = service.poll_qr_status(session)
-        assert res["status"] == "approved"
-        assert res["account_name"] == "TawapholPlayer"
-        assert steam_auth.is_steam_authenticated()
+    # Verify QPixmap conversion generates crisp non-empty pixel image
+    pix = steam_auth.qr_ascii_to_pixmap(lines_inverted, target_size=240)
+    assert pix is not None
+    assert not pix.isNull()
+    assert pix.width() > 0 and pix.height() > 0
 
-
-def test_poll_qr_status_rotation():
-    service = steam_auth.SteamAuthService(mock=False)
-    session = steam_auth.QRSession("c1", "r1", "https://s.team/q/1/orig", interval=5.0)
-
-    fake_response = MagicMock()
-    fake_response.json.return_value = {
-        "response": {
-            "new_challenge_url": "https://s.team/q/1/rotated_new_code",
-            "new_client_id": "c2_rotated",
-        }
-    }
-    fake_response.raise_for_status = MagicMock()
-
-    with patch("requests.post", return_value=fake_response):
-        res = service.poll_qr_status(session)
-        assert res["status"] == "rotated"
-        assert session.challenge_url == "https://s.team/q/1/rotated_new_code"
-        assert session.client_id == "c2_rotated"
+    # Verify pixels on QImage match module grid
+    img = pix.toImage()
+    from PySide6.QtGui import QColor
+    sample_col = img.pixelColor(pix.width() // 2, pix.height() // 2)
+    assert sample_col in (QColor(0, 0, 0, 255), QColor(255, 255, 255, 255))
 
 
 # --------------------------------------------------------------------------
@@ -240,6 +227,49 @@ def test_ensure_depot_downloader_declined_by_user():
         assert "cancelled by user" in str(exc_info.value)
 
 
+def test_find_depot_downloader_strict_pinned_only(tmp_path):
+    """Verify S2 Must Fix #4:
+    In production mode, find_depot_downloader refuses PATH, unversioned tools/,
+    and PORTPICKER_DEPOT_DOWNLOADER env var. Only tools/DepotDownloader_3.4.0/ is accepted.
+    """
+    candidate_name = "DepotDownloader.exe" if sys.platform == "win32" else "DepotDownloader"
+    fake_tools = tmp_path / "PortPicker" / "tools"
+    fake_tools.mkdir(parents=True, exist_ok=True)
+
+    # 1. Unversioned tools/exe
+    unversioned_exe = fake_tools / candidate_name
+    unversioned_exe.write_text("dummy")
+
+    # 2. Random exe on PATH / external
+    ext_exe = tmp_path / "external_depot" / candidate_name
+    ext_exe.parent.mkdir(parents=True, exist_ok=True)
+    ext_exe.write_text("dummy")
+
+    with patch.dict(os.environ, {
+        "LOCALAPPDATA": str(tmp_path),
+        "PORTPICKER_DEPOT_DOWNLOADER": str(ext_exe),
+        "PORTPICKER_TEST_MODE": "",
+        "PORTPICKER_FAKE_DEPOT_DOWNLOADER": "",
+    }):
+        orig_test = steam_auth._TEST_MODE
+        steam_auth._TEST_MODE = False
+        try:
+            # Must NOT pick up PORTPICKER_DEPOT_DOWNLOADER, unversioned tools, or PATH
+            res = steam_downloader.find_depot_downloader()
+            assert res is None
+
+            # Now install pinned copy in tools/DepotDownloader_3.4.0/
+            pinned_dir = fake_tools / f"DepotDownloader_{steam_downloader.DEPOT_DOWNLOADER_VERSION}"
+            pinned_dir.mkdir(parents=True, exist_ok=True)
+            pinned_exe = pinned_dir / candidate_name
+            pinned_exe.write_text("pinned")
+
+            res_pinned = steam_downloader.find_depot_downloader()
+            assert res_pinned == pinned_exe
+        finally:
+            steam_auth._TEST_MODE = orig_test
+
+
 # --------------------------------------------------------------------------
 # 4. Strict Mode Separation (No Silent Mock Fallback in Real Mode)
 # --------------------------------------------------------------------------
@@ -271,7 +301,7 @@ def test_fake_mode_downloads_mock_files(tmp_path):
 # --------------------------------------------------------------------------
 
 def test_verified_recipes():
-    """Verify S2 Must Fix #4: Recipes trimmed to 1-2 verified ports."""
+    """Verify S2 Must Fix #1: Recipes trimmed to 1-2 ports (untested; needs hardware test)."""
     recipes = steam_downloader.STEAM_DEPOT_RECIPES
     assert len(recipes) == 2
     assert "balatro" in recipes

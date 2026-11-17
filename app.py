@@ -2152,13 +2152,11 @@ class WirelessConnectDialog(QDialog):
 
 
 class SteamQRWorker(QThread):
-    qr_ascii_ready = Signal(list)
-    qr_pixmap_ready = Signal(str, object)
+    qr_pixmap_ready = Signal(object)
     status_changed = Signal(dict)
 
-    def __init__(self, auth_service: steam_auth.SteamAuthService | None = None):
+    def __init__(self):
         super().__init__()
-        self.auth = auth_service or steam_auth.SteamAuthService()
         self.cancelled = False
 
     def run(self):
@@ -2166,41 +2164,30 @@ class SteamQRWorker(QThread):
             exe = steam_downloader.find_depot_downloader()
             fake_mode = bool(os.environ.get("PORTPICKER_FAKE_DEPOT_DOWNLOADER"))
 
-            if exe or fake_mode:
-                # Primary official DepotDownloader QR auth flow (-qr -remember-password)
-                def on_qr(lines: list[str]):
-                    self.qr_ascii_ready.emit(lines)
+            if not exe and not fake_mode:
+                self.status_changed.emit({
+                    "status": "error",
+                    "error": "DepotDownloader is not installed.",
+                })
+                return
 
-                def on_approved(account: str):
-                    self.status_changed.emit({
-                        "status": "approved",
-                        "account_name": account,
-                    })
+            def on_qr(lines: list[str]):
+                pix = steam_auth.qr_ascii_to_pixmap(lines, target_size=240)
+                if pix and not pix.isNull():
+                    self.qr_pixmap_ready.emit(pix)
 
-                steam_downloader.run_depot_downloader_qr_login(
-                    on_qr_lines=on_qr,
-                    on_approved=on_approved,
-                    cancel=lambda: self.cancelled,
-                    fake_mode=fake_mode,
-                )
-            else:
-                # Steam Web API QR fallback
-                session = self.auth.begin_qr_session()
-                pix = steam_auth.generate_qr_pixmap(session.challenge_url, size=220)
-                self.qr_pixmap_ready.emit(session.challenge_url, pix)
+            def on_approved(account: str):
+                self.status_changed.emit({
+                    "status": "approved",
+                    "account_name": account,
+                })
 
-                start = time.time()
-                while not self.cancelled and time.time() - start < 180:
-                    time.sleep(session.interval)
-                    if self.cancelled:
-                        break
-                    res = self.auth.poll_qr_status(session)
-                    self.status_changed.emit(res)
-                    if res.get("status") in ("approved", "expired", "error"):
-                        break
-                    if res.get("status") == "rotated":
-                        new_pix = steam_auth.generate_qr_pixmap(session.challenge_url, size=220)
-                        self.qr_pixmap_ready.emit(session.challenge_url, new_pix)
+            steam_downloader.run_depot_downloader_qr_login(
+                on_qr_lines=on_qr,
+                on_approved=on_approved,
+                cancel=lambda: self.cancelled,
+                fake_mode=fake_mode,
+            )
         except Exception as e:
             self.status_changed.emit({"status": "error", "error": str(e)})
 
@@ -2208,11 +2195,10 @@ class SteamQRWorker(QThread):
 class SteamLoginDialog(QDialog):
     """Dialog displaying a Steam QR code for authentication via Steam Mobile App."""
 
-    def __init__(self, parent=None, auth_service: steam_auth.SteamAuthService | None = None):
+    def __init__(self, parent=None):
         super().__init__(parent)
         self.setWindowTitle(t("steam.dialog_title", "Steam QR Login"))
         self.setMinimumWidth(460)
-        self.auth = auth_service
         self._worker: SteamQRWorker | None = None
         self.session_success = False
 
@@ -2231,15 +2217,15 @@ class SteamLoginDialog(QDialog):
 
         # Container for QR display
         self.qr_box = QFrame()
-        self.qr_box.setStyleSheet("background:#101217;border-radius:12px;padding:12px;")
+        self.qr_box.setStyleSheet("background:#ffffff;border-radius:12px;padding:12px;")
         qr_layout = QVBoxLayout(self.qr_box)
         qr_layout.setAlignment(Qt.AlignCenter)
 
         self.qr_lbl = QLabel()
         self.qr_lbl.setAlignment(Qt.AlignCenter)
-        self.qr_lbl.setMinimumSize(220, 220)
+        self.qr_lbl.setMinimumSize(240, 240)
         self.qr_lbl.setText("Generating QR Code…")
-        self.qr_lbl.setStyleSheet("color:#9aa0b2;font-style:italic;")
+        self.qr_lbl.setStyleSheet("color:#4a5568;font-style:italic;")
         qr_layout.addWidget(self.qr_lbl)
         layout.addWidget(self.qr_box)
 
@@ -2268,7 +2254,9 @@ class SteamLoginDialog(QDialog):
 
     def _start_session(self):
         self.btn_refresh.hide()
+        self.qr_lbl.setPixmap(QPixmap())
         self.qr_lbl.setText("Generating QR Code…")
+        self.qr_lbl.setStyleSheet("color:#4a5568;font-style:italic;")
         self.status_lbl.setText(t("steam.waiting_approval", "Waiting for mobile approval…"))
         self.status_lbl.setStyleSheet("font-weight:600;color:#e7e9ef;")
 
@@ -2276,24 +2264,15 @@ class SteamLoginDialog(QDialog):
             self._worker.cancelled = True
             self._worker.wait(500)
 
-        self._worker = SteamQRWorker(self.auth)
-        self._worker.qr_ascii_ready.connect(self._on_qr_ascii)
+        self._worker = SteamQRWorker()
         self._worker.qr_pixmap_ready.connect(self._on_qr_pixmap)
         self._worker.status_changed.connect(self._on_status_changed)
         self._worker.start()
 
-    def _on_qr_ascii(self, lines: list[str]):
-        text = "\n".join(lines)
-        self.qr_lbl.setText(text)
-        self.qr_lbl.setStyleSheet(
-            "font-family:monospace;font-size:7px;line-height:0.9;color:#ffffff;background:#000000;padding:8px;border-radius:6px;"
-        )
-
-    def _on_qr_pixmap(self, url: str, pixmap: object):
+    def _on_qr_pixmap(self, pixmap: object):
         if pixmap and isinstance(pixmap, QPixmap):
+            self.qr_lbl.setText("")
             self.qr_lbl.setPixmap(pixmap)
-        else:
-            self.qr_lbl.setText(f"Scan in Steam:\n{url}")
 
     def _on_status_changed(self, res: dict):
         status = res.get("status")
@@ -2440,7 +2419,10 @@ class Main(QMainWindow):
             reply = QMessageBox.question(
                 self,
                 "Steam",
-                f"Currently logged in as {name}.\n\nDo you want to log out?",
+                f"Currently logged in as {name}.\n\n"
+                "Do you want to log out?\n\n"
+                "Note: This will clear saved DepotDownloader sessions in IsolatedStorage, "
+                "which will also log out any standalone DepotDownloader instances.",
                 QMessageBox.Yes | QMessageBox.No,
             )
             if reply == QMessageBox.Yes:
