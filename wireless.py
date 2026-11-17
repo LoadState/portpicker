@@ -20,6 +20,7 @@ import os
 import posixpath
 import shutil
 import socket
+import time
 import sys
 import zipfile
 from dataclasses import dataclass, field
@@ -364,6 +365,7 @@ class WirelessConnection:
         self.is_default_password: bool = False
         self.host_key_fingerprint: str = ""
         self.is_new_host_key: bool = False
+        self._reconnect_args: dict | None = None  # in memory only; lets us reopen a dropped session
 
     def connect(
         self,
@@ -465,6 +467,34 @@ class WirelessConnection:
         self.port = port
         self.username = username
         self.sftp = client.open_sftp()
+        self._reconnect_args = dict(host=host, port=port, username=username, password=password,
+                                    timeout=timeout, keepalive=keepalive)
+
+    def ensure_connected(self, log: Callable[[str], None] | None = None) -> None:
+        """Reopen the session if it dropped (e.g. idle during a long Steam download, or the handheld's Wi-Fi
+        slept). Host-key checking still applies: a changed key fails instead of being trusted."""
+        if self.is_alive() and self.sftp is not None:
+            return  # a session that died mid-transfer is caught by put_file_atomic's retry
+        if not self._reconnect_args:
+            return  # never connected through connect() (tests/fakes): nothing to reopen; uploads report errors
+        if log:
+            log("  ↻ Wi-Fi connection dropped; reconnecting…")
+        args = self._reconnect_args
+        last: Exception | None = None
+        for attempt in range(3):
+            try:
+                self.connect(**args)
+                return
+            except paramiko.BadHostKeyException:
+                raise
+            except ConnectionError as e:
+                if "Host key" in str(e):
+                    raise
+                last = e
+            except Exception as e:  # noqa: BLE001 - network errors vary; retry a few times
+                last = e
+            time.sleep(2 * (attempt + 1))
+        raise ConnectionError(f"Could not reconnect to {args['host']}: {last}")
 
     def is_alive(self) -> bool:
         if not self.client:
@@ -575,7 +605,24 @@ class WirelessConnection:
         progress: Callable[[int, int], None] | None = None,
         cancel: Callable[[], bool] | None = None,
     ) -> None:
-        """Upload file via SFTP using atomic write (<remote_path>.part then rename)."""
+        """Upload via SFTP (.part then rename). If the session drops mid-file, reconnect and redo that file."""
+        for attempt in range(3):
+            try:
+                return self._put_file_atomic_once(local_path, remote_path, progress, cancel)
+            except InterruptedError:
+                raise
+            except (paramiko.SSHException, EOFError, socket.error) as e:
+                if attempt == 2 or not self._reconnect_args:
+                    raise ConnectionError(f"Wi-Fi upload failed after retries: {e}") from e
+                self.ensure_connected()
+
+    def _put_file_atomic_once(
+        self,
+        local_path: Path,
+        remote_path: str,
+        progress: Callable[[int, int], None] | None = None,
+        cancel: Callable[[], bool] | None = None,
+    ) -> None:
         if not self.sftp:
             raise ConnectionError("SFTP not connected")
         parent = posixpath.dirname(remote_path)
@@ -1093,7 +1140,9 @@ def transfer_port_wireless(
                 except Exception as e:
                     log(f"  ⚠ Skipped removing remote directory {remote_d}: {e}")
 
-        # 3. SFTP Upload Port directories
+        # 3. SFTP Upload Port directories. The steps above (Steam download) can take many minutes, long enough
+        # for the handheld to drop an idle session, so check it first.
+        conn.ensure_connected(log)
         log("  ⇢ Uploading port files over SFTP…")
         uploaded_scripts: list[str] = []
 
