@@ -23,7 +23,7 @@ def _port(title, name):
 def test_parse_and_match_device_cfw_port():
     rows = core.parse_beta_results(CSV)
     assert len(rows) == 3 and rows[0]["artwork"] == "Yes" and rows[0]["tester"] == "tawa"
-    sp = next(d for d in DEVICES if d.id == "rg35xxsp")
+    sp = next(d for d in DEVICES if d.id == "h700-nosticks")
     brick = next(d for d in DEVICES if d.id == "brickpro")
     cave = _port("Cave Story (Evo)", "cave.story-evo.zip")
     hits = core.beta_results_for(cave, sp, MUOS, rows)

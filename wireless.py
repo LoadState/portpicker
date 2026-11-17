@@ -708,17 +708,21 @@ def _read_probe_file(conn: WirelessConnection, paths: list[str]) -> str | None:
 def match_device_from_string(raw: str) -> Device | None:
     """Match raw model string (e.g. 'rg35xx-sp', 'tg5040') to a PortPicker Device."""
     s = raw.lower().replace("-", "").replace("_", "").replace(" ", "")
-    if "rg35xxsp" in s:
-        return next((d for d in DEVICES if d.id == "rg35xxsp"), None)
     if "brickpro" in s or "tg5040" in s:
         return next((d for d in DEVICES if d.id == "brickpro"), None)
     if "smartpro" in s:
         return next((d for d in DEVICES if d.id == "smartpro"), None)
     if "brick" in s:
         return next((d for d in DEVICES if d.id == "brick"), None)
-    if "rg40xxh" in s or "rg35xxh" in s:
-        return next((d for d in DEVICES if d.id in ("rg40xxh", "h700-sticks")), None)
-    if "rg35xxplus" in s or "rg28xx" in s or "rg40xxv" in s:
+    # Anbernic H700: one card per stick count. Models whose stick count we have not confirmed
+    # return None so the card the user picked is kept.
+    if "rg34xxsp" in s or "rgcubexx" in s:
+        return None
+    if "rg40xxv" in s:
+        return next((d for d in DEVICES if d.id == "h700-1stick"), None)
+    if any(k in s for k in ("rg40xxh", "rg35xxh")):
+        return next((d for d in DEVICES if d.id == "h700-sticks"), None)
+    if any(k in s for k in ("rg35xxsp", "rg35xxplus", "rg35xx2024", "rg28xx", "rg34xx", "rg35xx")):
         return next((d for d in DEVICES if d.id == "h700-nosticks"), None)
     if "r36s" in s:
         return next((d for d in DEVICES if d.id == "r36s"), None)
@@ -792,7 +796,7 @@ def probe_remote(conn: WirelessConnection, device_hint: Device | None = None) ->
         if board_str:
             matched_dev = match_device_from_string(board_str)
         if not matched_dev:
-            matched_dev = next((d for d in DEVICES if d.id == "rg35xxsp"), DEVICES[0])
+            matched_dev = next((d for d in DEVICES if d.id == "h700-nosticks"), DEVICES[0])
 
     # 3. Mounts & Storage Layout
     if is_muos_sftp:
