@@ -1171,7 +1171,7 @@ def transfer_port_wireless(
                 remote_art = f"{layout.media_dir}/{script_stem}.png"
                 validate_sftp_write_path(remote_art, layout)
                 local_png = stage_dir / f"{script_stem}.png"
-                core.copy_box_art(img, local_png)
+                core.copy_box_art(img, local_png, dev)
                 conn.put_file_atomic(local_png, remote_art, cancel=cancel)
 
         # 6. Set execute permissions on scripts via SFTP chmod
