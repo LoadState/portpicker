@@ -948,6 +948,30 @@ STRINGS: dict[str, dict[str, str]] = {
         "en": "💡 Reopen the Ports menu on your handheld to see newly installed games",
         "th": "💡 เปิดเมนู Ports บนเครื่องเกมใหม่อีกครั้งเพื่อแสดงเกมที่เพิ่งติดตั้ง",
     },
+    "wireless.sftp_doc_hint": {
+        "en": "muOS Secure File Transfer (default: port 2022, muos / muos · muos.dev/web/sftp)",
+        "th": "muOS Secure File Transfer (ค่าเริ่มต้น: พอร์ต 2022, muos / muos · muos.dev/web/sftp)",
+    },
+    "wireless.retrust_btn": {
+        "en": "Trust New Key & Reconnect",
+        "th": "เชื่อถือคีย์ใหม่และเชื่อมต่ออีกครั้ง",
+    },
+    "wireless.err_port_22_refused": {
+        "en": "Connection refused on port 22. Turn on Secure File Transfer in muOS (port 2022).",
+        "th": "การเชื่อมต่อไปยังพอร์ต 22 ถูกปฏิเสธ กรุณาเปิด Secure File Transfer ใน muOS (พอร์ต 2022)",
+    },
+    "wireless.storage_choice_label": {
+        "en": "Install to:",
+        "th": "ติดตั้งลงใน:",
+    },
+    "wireless.storage_sd2": {
+        "en": "Secondary Storage (SD2 - Games)",
+        "th": "Secondary Storage (SD2 - เกม)",
+    },
+    "wireless.storage_sd1": {
+        "en": "Primary Storage (SD1 - System/Games)",
+        "th": "Primary Storage (SD1 - ระบบ/เกม)",
+    },
 
     # ------------------------------------------------------------------------
     # Failure hints

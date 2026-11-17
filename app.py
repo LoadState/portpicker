@@ -721,8 +721,12 @@ class CfwPage(QWidget):
         return core.build_target(self.cfw, root, system_root=self._system_root_manual)
 
     def _open_wireless_dialog(self):
-        dlg = WirelessConnectDialog(self, self.cfw)
+        main_win = self.window()
+        dev_hint = getattr(main_win, "dev", self.dev)
+        dlg = WirelessConnectDialog(self, self.cfw, device_hint=dev_hint)
         if dlg.exec() == QDialog.Accepted and dlg.conn and dlg.probe:
+            if self._wireless_target and self._wireless_target.conn:
+                self._wireless_target.conn.close()
             matched_cfw = next((c for c in CFWS if c.id == dlg.probe.cfw_id), self.cfw or MUOS)
             self._wireless_target = wireless.WirelessTarget(matched_cfw, dlg.conn, dlg.probe)
             self.sd.hide()
@@ -750,7 +754,6 @@ class CfwPage(QWidget):
             self.cfw = matched_cfw
             self.changed.emit()
 
-            main_win = self.window()
             if hasattr(main_win, "dev"):
                 probed_dev = next((d for d in DEVICES if d.id == dlg.probe.device_id), None)
                 if probed_dev and probed_dev != main_win.dev:
@@ -1779,11 +1782,12 @@ class SwapCard1Dialog(QDialog):
 
 
 class WirelessConnectDialog(QDialog):
-    def __init__(self, parent=None, cfw_hint: CFW | None = None):
+    def __init__(self, parent=None, cfw_hint: CFW | None = None, device_hint: Device | None = None):
         super().__init__(parent)
         self.setWindowTitle(t("wireless.title", "Connect Handheld over Wi-Fi"))
         self.setMinimumWidth(560)
         self.cfw_hint = cfw_hint
+        self.device_hint = device_hint
         self.conn: wireless.WirelessConnection | None = None
         self.probe: wireless.RemoteProbe | None = None
         self._worker: Worker | None = None
@@ -1826,9 +1830,12 @@ class WirelessConnectDialog(QDialog):
         p_lbl = QLabel(t("wireless.port", "Port:"))
         p_lbl.setFixedWidth(140)
         port_row.addWidget(p_lbl)
-        self.port_txt = QLineEdit("22")
+        self.port_txt = QLineEdit(str(wireless.DEFAULT_WIRELESS_PORT))
         self.port_txt.setFixedWidth(100)
         port_row.addWidget(self.port_txt)
+        hint_sftp = QLabel(t("wireless.sftp_doc_hint", "muOS Secure File Transfer (default: port 2022, muos / muos · muos.dev/web/sftp)"))
+        hint_sftp.setStyleSheet("color:#818cf8;font-size:11px;")
+        port_row.addWidget(hint_sftp)
         port_row.addStretch()
         layout.addLayout(port_row)
 
@@ -1848,7 +1855,7 @@ class WirelessConnectDialog(QDialog):
         u_lbl = QLabel(t("wireless.user", "Username:"))
         u_lbl.setFixedWidth(140)
         u_row.addWidget(u_lbl)
-        self.user_txt = QLineEdit("root")
+        self.user_txt = QLineEdit("muos")
         u_row.addWidget(self.user_txt, 1)
         cg_layout.addLayout(u_row)
 
@@ -1856,7 +1863,7 @@ class WirelessConnectDialog(QDialog):
         pw_lbl = QLabel(t("wireless.password", "Password:"))
         pw_lbl.setFixedWidth(140)
         pw_row.addWidget(pw_lbl)
-        self.pwd_txt = QLineEdit("")
+        self.pwd_txt = QLineEdit("muos")
         self.pwd_txt.setEchoMode(QLineEdit.Password)
         pw_row.addWidget(self.pwd_txt, 1)
         cg_layout.addLayout(pw_row)
@@ -1880,6 +1887,22 @@ class WirelessConnectDialog(QDialog):
         self.res_details.setStyleSheet("color:#e7e9ef;")
         self.res_details.setWordWrap(True)
         rp_layout.addWidget(self.res_details)
+
+        # Storage choice row for dual-SD
+        self.storage_row = QWidget()
+        sr_layout = QHBoxLayout(self.storage_row)
+        sr_layout.setContentsMargins(0, 2, 0, 2)
+        s_lbl = QLabel(t("wireless.storage_choice_label", "Install to:"))
+        s_lbl.setFixedWidth(140)
+        self.storage_combo = QComboBox()
+        self.storage_combo.addItem(t("wireless.storage_sd2", "Secondary Storage (SD2 - Games)"), "sd2")
+        self.storage_combo.addItem(t("wireless.storage_sd1", "Primary Storage (SD1 - System/Games)"), "sd1")
+        self.storage_combo.currentIndexChanged.connect(self._on_storage_changed)
+        sr_layout.addWidget(s_lbl)
+        sr_layout.addWidget(self.storage_combo, 1)
+        rp_layout.addWidget(self.storage_row)
+        self.storage_row.hide()
+
         self.res_warn = QLabel("")
         self.res_warn.setStyleSheet("color:#fbbf24;font-size:12px;")
         self.res_warn.setWordWrap(True)
@@ -1897,8 +1920,14 @@ class WirelessConnectDialog(QDialog):
         btn_row = QHBoxLayout()
         self.btn_connect = QPushButton(t("wireless.connect_and_probe", "Connect & Probe"))
         self.btn_connect.setObjectName("primary")
-        self.btn_connect.clicked.connect(self._connect_and_probe)
+        self.btn_connect.clicked.connect(lambda: self._connect_and_probe(retrust=False))
         btn_row.addWidget(self.btn_connect)
+
+        self.btn_retrust = QPushButton(t("wireless.retrust_btn", "Trust New Key & Reconnect"))
+        self.btn_retrust.setObjectName("primary")
+        self.btn_retrust.clicked.connect(lambda: self._connect_and_probe(retrust=True))
+        self.btn_retrust.hide()
+        btn_row.addWidget(self.btn_retrust)
 
         self.btn_use = QPushButton(t("wireless.use_device_btn", "Use This Handheld"))
         self.btn_use.setObjectName("primary")
@@ -1924,21 +1953,25 @@ class WirelessConnectDialog(QDialog):
             u, p = saved
             self.user_txt.setText(u)
             self.pwd_txt.setText(p)
+        else:
+            self.user_txt.setText("muos")
+            self.pwd_txt.setText("muos")
 
     def _forget_device(self):
         host_raw = self.host_combo.currentText().split()[0].strip()
         if not host_raw:
             return
-        port = 22
+        port = wireless.DEFAULT_WIRELESS_PORT
         try:
             port = int(self.port_txt.text().strip())
         except ValueError:
             pass
         deleted = wireless.forget_host(host_raw, port=port)
-        self.user_txt.setText("root")
-        self.pwd_txt.setText("")
+        self.user_txt.setText("muos")
+        self.pwd_txt.setText("muos")
         self.result_panel.hide()
         self.btn_use.hide()
+        self.btn_retrust.hide()
         if deleted:
             self.status_lbl.setText(t("wireless.forgot_success", "Device forgotten: cleared saved host key and credentials for {host}.", host=host_raw))
         else:
@@ -1971,13 +2004,52 @@ class WirelessConnectDialog(QDialog):
         self._disco_worker = w
         w.start()
 
-    def _connect_and_probe(self):
+    def _on_storage_changed(self):
+        if not self.probe or not self.probe.layout.dual_sd:
+            return
+        choice = self.storage_combo.currentData()
+        if choice == "sd1":
+            self.probe.layout.games_root = "/Primary Storage"
+            self.probe.layout.ports_dir = "/Primary Storage/ports"
+            self.probe.layout.scripts_dir = "/Primary Storage/ROMS/Ports"
+        else:
+            self.probe.layout.games_root = "/Secondary Storage"
+            self.probe.layout.ports_dir = "/Secondary Storage/ports"
+            self.probe.layout.scripts_dir = "/Secondary Storage/ROMS/Ports"
+        self._render_probe_details()
+
+    def _render_probe_details(self):
+        if not self.probe:
+            return
+        probe = self.probe
+        pm_txt = f"PortMaster: {probe.pm_version}" if probe.pm_version else "PortMaster: Built-in / Verified"
+        free_p = human(probe.layout.free_ports_bytes) if probe.layout.free_ports_bytes else "Available"
+        free_l = human(probe.layout.free_libs_bytes) if probe.layout.free_libs_bytes else "Available"
+        if probe.layout.dual_sd:
+            stor_txt = (
+                f"Storage (Dual SD):\n"
+                f"  • Games ({self.storage_combo.currentText()}): {probe.layout.ports_dir} ({free_p})\n"
+                f"  • System (Card 1): {probe.layout.libs_dir} ({free_l})"
+            )
+        else:
+            stor_txt = f"Storage:\n  • {probe.layout.ports_dir} ({free_p})"
+
+        hk_txt = f"\nHost Key: {probe.host_key_fingerprint}" if probe.host_key_fingerprint else ""
+        if probe.is_new_host_key:
+            hk_txt += " (Trusted & Saved)"
+        self.res_details.setText(f"CFW Version: {probe.cfw_version}\n{pm_txt}\n{stor_txt}{hk_txt}")
+
+    def _connect_and_probe(self, retrust: bool = False):
+        if self.conn:
+            self.conn.close()
+            self.conn = None
+
         host_raw = self.host_combo.currentText().split()[0].strip()
         if not host_raw:
             self.status_lbl.setText("Please enter a hostname or IP address.")
             return
 
-        port = 22
+        port = wireless.DEFAULT_WIRELESS_PORT
         try:
             port = int(self.port_txt.text().strip())
         except ValueError:
@@ -1989,23 +2061,32 @@ class WirelessConnectDialog(QDialog):
         hint = self.cfw_hint.id if self.cfw_hint else None
 
         self.btn_connect.setEnabled(False)
+        self.btn_retrust.hide()
         self.btn_use.hide()
         self.result_panel.hide()
         self.status_lbl.setText(t("wireless.connecting", "Connecting and probing handheld…"))
 
         def job(w: Worker):
-            conn = wireless.connect_with_credentials_or_defaults(
-                host=host_raw,
-                port=port,
-                username=u,
-                password=p,
-                cfw_hint=hint,
-            )
-            probe = wireless.probe_remote(conn)
-            return conn, probe
+            conn = None
+            try:
+                conn = wireless.connect_with_credentials_or_defaults(
+                    host=host_raw,
+                    port=port,
+                    username=u,
+                    password=p,
+                    cfw_hint=hint,
+                    retrust=retrust,
+                )
+                probe = wireless.probe_remote(conn, device_hint=self.device_hint)
+                return conn, probe
+            except Exception:
+                if conn:
+                    conn.close()
+                raise
 
         def on_ok(res):
             self.btn_connect.setEnabled(True)
+            self.btn_retrust.hide()
             conn, probe = res
             self.conn = conn
             self.probe = probe
@@ -2016,18 +2097,16 @@ class WirelessConnectDialog(QDialog):
             self.status_lbl.setText("")
             self.res_title.setText(t("wireless.connected_success", "✔ Connected to {device} ({cfw})", device=probe.device_name, cfw=probe.cfw_name))
 
-            pm_txt = f"PortMaster: {probe.pm_version}" if probe.pm_version else "PortMaster: Built-in / Unknown"
-            free_p = human(probe.layout.free_ports_bytes)
-            free_l = human(probe.layout.free_libs_bytes)
             if probe.layout.dual_sd:
-                stor_txt = f"Storage (Dual SD):\n  • SD2 (Games): {probe.layout.ports_dir} ({free_p} free)\n  • SD1 (System): {probe.layout.libs_dir} ({free_l} free)"
+                self.storage_combo.blockSignals(True)
+                self.storage_combo.setCurrentIndex(0)
+                self.storage_combo.blockSignals(False)
+                self.storage_row.show()
             else:
-                stor_txt = f"Storage:\n  • {probe.layout.ports_dir} ({free_p} free)"
+                self.storage_row.hide()
 
-            hk_txt = f"\nHost Key: {probe.host_key_fingerprint}" if probe.host_key_fingerprint else ""
-            if probe.is_new_host_key:
-                hk_txt += " (Trusted & Saved)"
-            self.res_details.setText(f"CFW Version: {probe.cfw_version}\n{pm_txt}\n{stor_txt}{hk_txt}")
+            self._render_probe_details()
+
             if probe.warning:
                 self.res_warn.setText(probe.warning)
                 self.res_warn.show()
@@ -2042,12 +2121,13 @@ class WirelessConnectDialog(QDialog):
             msg = err.strip()
             first_line = msg.splitlines()[0] if msg else "Unknown error"
             self.status_lbl.setText(f"✖ Connection failed: {first_line}")
-            if "host key" in msg.lower():
+            if "host key" in msg.lower() or "verification failed" in msg.lower():
                 self.res_title.setText("Host Key Verification Failed")
                 self.res_title.setStyleSheet("font-weight:700;color:#f87171;font-size:14px;")
                 self.res_details.setText(msg)
                 self.res_warn.hide()
                 self.result_panel.show()
+                self.btn_retrust.show()
 
         w = Worker(job)
         w.finished_ok.connect(on_ok)
@@ -2587,6 +2667,11 @@ class Main(QMainWindow):
         if busy:
             self.worker.cancelled = True
             self.worker.wait(5000)
+        if hasattr(self, "p_target") and getattr(self.p_target, "_wireless_target", None):
+            try:
+                self.p_target._wireless_target.conn.close()
+            except Exception:
+                pass
         e.accept()
 
 

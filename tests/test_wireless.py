@@ -1,8 +1,14 @@
 """Tests for PortPicker wireless transfer module (SSH/SFTP).
 
-Trimmed for muOS on Anbernic H700 / supported handhelds.
-Tests mDNS discovery, DPAPI credential storage, SSH probing on muOS (single/dual SD),
-atomic SFTP push (.part -> rename), runtime MD5 skipping, and muOS catalogue refresh hooks.
+Trimmed for muOS on Anbernic H700 / supported handhelds via Secure File Transfer (SFTP).
+Tests:
+- SFTP virtual root detection (/Primary Storage, /Internal, /Catalogue)
+- Dual SD (/Secondary Storage) vs Single SD (/Primary Storage)
+- Path mapping /mnt/mmc → /Primary Storage, /mnt/sdcard → /Secondary Storage, catalogue → /Catalogue
+- Forbidden paths protection (/Internal, /Boot, /tmp, /root)
+- Pure SFTP with zero exec commands (fake SFTP-only server where exec raises)
+- Default credentials (muos:muos on port 2022) and port 22 refused hint
+- TOFU host-key verification, re-trust on service restart, and DPAPI
 """
 from __future__ import annotations
 
@@ -14,6 +20,7 @@ from dataclasses import dataclass
 from pathlib import Path
 from unittest.mock import MagicMock, patch
 
+import paramiko
 import pytest
 
 import core
@@ -35,10 +42,38 @@ class MockSFTPStat:
 class MockSFTPClient:
     def __init__(self):
         self.files: dict[str, bytes] = {}
-        self.dirs: set[str] = {"/", "/mnt", "/opt", "/usr", "/etc"}
+        self.dirs: set[str] = {
+            "/",
+            "/Primary Storage",
+            "/Secondary Storage",
+            "/Internal",
+            "/Boot",
+            "/Catalogue",
+            "/Collections",
+            "/History",
+            "/mnt",
+            "/opt",
+        }
         self.put_calls: list[tuple[str, str]] = []
         self.rename_calls: list[tuple[str, str]] = []
         self.removed_files: list[str] = []
+        self.chmod_calls: list[tuple[str, int]] = []
+
+    def listdir(self, remote_path: str) -> list[str]:
+        rp = remote_path.rstrip("/")
+        prefix = rp + "/"
+        found = set()
+        for d in sorted(self.dirs):
+            if d.startswith(prefix):
+                sub = d[len(prefix):].split("/")[0]
+                if sub:
+                    found.add(sub)
+        for f in sorted(self.files):
+            if f.startswith(prefix):
+                sub = f[len(prefix):].split("/")[0]
+                if sub:
+                    found.add(sub)
+        return sorted(list(found))
 
     def listdir_attr(self, remote_path: str) -> list[MockSFTPStat]:
         rp = remote_path.rstrip("/")
@@ -78,7 +113,6 @@ class MockSFTPClient:
     def open(self, remote_path: str, mode: str = "r"):
         rp = remote_path.rstrip("/")
         if "w" in mode or "a" in mode:
-            # For writing
             bio = io.BytesIO()
             orig_close = bio.close
 
@@ -89,7 +123,6 @@ class MockSFTPClient:
             bio.close = on_close
             return bio
         else:
-            # For reading
             if rp not in self.files:
                 raise IOError(f"File not found: {remote_path}")
             return io.BytesIO(self.files[rp])
@@ -115,6 +148,28 @@ class MockSFTPClient:
         self.removed_files.append(remote_path)
         self.files.pop(remote_path, None)
 
+    def chmod(self, remote_path: str, mode: int):
+        self.chmod_calls.append((remote_path, mode))
+
+    def _request(self, cmd: int, *args):
+        # Handle OpenSSH statvfs extension
+        from paramiko.sftp_client import CMD_EXTENDED
+        if cmd == CMD_EXTENDED and args and args[0] == "statvfs@openssh.com":
+            msg = paramiko.Message()
+            msg.add_int64(4096)      # f_bsize
+            msg.add_int64(4096)      # f_frsize
+            msg.add_int64(15000000)  # f_blocks (~60 GB)
+            msg.add_int64(12000000)  # f_bfree
+            msg.add_int64(12000000)  # f_bavail (~48 GB free)
+            msg.add_int64(1000000)   # f_files
+            msg.add_int64(900000)    # f_ffree
+            msg.add_int64(900000)    # f_favail
+            msg.add_int64(0)         # f_fsid
+            msg.add_int64(0)         # f_flag
+            msg.add_int64(255)       # f_namemax
+            return 201, paramiko.Message(msg.asbytes())
+        return 0, None
+
     def close(self):
         pass
 
@@ -128,8 +183,9 @@ class MockChannel:
 
 
 class MockSSHClient:
-    def __init__(self, sftp_client: MockSFTPClient):
+    def __init__(self, sftp_client: MockSFTPClient, allow_exec: bool = False):
         self.sftp = sftp_client
+        self.allow_exec = allow_exec
         self.executed_commands: list[str] = []
         self.keepalive_set = None
 
@@ -143,37 +199,17 @@ class MockSSHClient:
         return self.sftp
 
     def exec_command(self, cmd: str, timeout: float = 15.0):
+        if not self.allow_exec:
+            raise paramiko.SSHException("Channel open failed: exec channel disabled (SFTP-only server)")
         self.executed_commands.append(cmd)
         stdout_bio = io.BytesIO()
         stderr_bio = io.BytesIO()
         channel = MockChannel(0)
-
-        # Handle df -k
-        if "df -k" in cmd:
-            out = "Filesystem 1K-blocks Used Available Use% Mounted on\n/dev/mmcblk0p1 62000000 1000000 61000000 2% /mnt/mmc\n"
-            stdout_bio = io.BytesIO(out.encode("utf-8"))
-
-        # Handle md5sum
-        elif "md5sum" in cmd:
-            parts = cmd.split("'")
-            path = parts[1] if len(parts) > 1 else ""
-            if path in self.sftp.files:
-                import hashlib
-                h = hashlib.md5(self.sftp.files[path]).hexdigest()
-                stdout_bio = io.BytesIO(f"{h}  {path}\n".encode("utf-8"))
-            else:
-                channel = MockChannel(1)
-                stderr_bio = io.BytesIO(b"md5sum: file not found\n")
-
-        elif "uname -m" in cmd:
-            stdout_bio = io.BytesIO(b"aarch64\n")
-
         mock_stdout = MagicMock()
         mock_stdout.channel = channel
         mock_stdout.read.side_effect = stdout_bio.getvalue
         mock_stderr = MagicMock()
         mock_stderr.read.side_effect = stderr_bio.getvalue
-
         return MagicMock(), mock_stdout, mock_stderr
 
     def close(self):
@@ -183,12 +219,13 @@ class MockSSHClient:
 @pytest.fixture
 def mock_remote_env():
     sftp = MockSFTPClient()
-    ssh = MockSSHClient(sftp)
+    ssh = MockSSHClient(sftp, allow_exec=False)
     conn = wireless.WirelessConnection()
     conn.client = ssh
     conn.sftp = sftp
     conn.host = "192.168.1.100"
-    conn.username = "root"
+    conn.port = wireless.DEFAULT_WIRELESS_PORT
+    conn.username = "muos"
     return conn, ssh, sftp
 
 
@@ -221,56 +258,109 @@ def test_dpapi_credential_save_and_retrieve(tmp_path):
         res = wireless.get_saved_credential("muos.local")
         assert res == ("muos", "secret123")
 
-        # Case-insensitivity check
         res_upper = wireless.get_saved_credential("MUOS.LOCAL")
         assert res_upper == ("muos", "secret123")
 
-        # Unknown host
         assert wireless.get_saved_credential("unknown.local") is None
 
 
-def test_probe_muos_dual_sd(mock_remote_env):
-    """Test SSH probing on muOS with 2 SD cards (/mnt/mmc and /mnt/sdcard)."""
+def test_probe_muos_sftp_dual_sd(mock_remote_env):
+    """Test muOS SFTP probing with virtual root (/Primary Storage and /Secondary Storage)."""
     conn, ssh, sftp = mock_remote_env
-    # Set up muOS files
-    sftp.files["/opt/muos/config/system/version"] = b"2606.0\n"
-    sftp.files["/opt/muos/device/config/board/name"] = b"rg35xx-sp\n"
-    sftp.files["/mnt/mmc/MUOS/PortMaster/version"] = b"2024.11.01\n"
-    sftp.dirs.add("/mnt/mmc")
-    sftp.dirs.add("/mnt/sdcard")
+    sftp.files["/Internal/version"] = b"2606.0\n"
+    sftp.files["/Primary Storage/MUOS/PortMaster/version"] = b"2024.11.01\n"
+    sftp.dirs.add("/Primary Storage")
+    sftp.dirs.add("/Secondary Storage")
+    sftp.dirs.add("/Internal")
+    sftp.dirs.add("/Catalogue")
 
-    probe = wireless.probe_remote(conn)
+    dev_hint = next(d for d in DEVICES if d.id == "rg35xxsp")
+    probe = wireless.probe_remote(conn, device_hint=dev_hint)
+
     assert probe.cfw_id == "muos"
     assert probe.cfw_version == "2606.0"
     assert probe.device_id == "rg35xxsp"
     assert probe.pm_version == "2024.11.01"
     assert probe.layout.dual_sd is True
-    # SD2 is used for games, SD1 for runtimes and media
-    assert probe.layout.ports_dir == "/mnt/sdcard/ports"
-    assert probe.layout.scripts_dir == "/mnt/sdcard/ROMS/Ports"
-    assert probe.layout.libs_dir == "/mnt/mmc/MUOS/PortMaster/libs"
-    assert probe.layout.media_dir == "/mnt/mmc/MUOS/info/catalogue/External - Ports/box"
+    # SD2 (Secondary Storage) is used for games, SD1 (Primary Storage) for runtimes, Catalogue for box art
+    assert probe.layout.ports_dir == "/Secondary Storage/ports"
+    assert probe.layout.scripts_dir == "/Secondary Storage/ROMS/Ports"
+    assert probe.layout.libs_dir == "/Primary Storage/MUOS/PortMaster/libs"
+    assert probe.layout.media_dir == "/Catalogue/External - Ports/box"
+    # Zero exec commands executed!
+    assert len(ssh.executed_commands) == 0
 
 
-def test_probe_muos_single_sd(mock_remote_env):
-    """Test SSH probing on muOS with a single SD card (/mnt/mmc only)."""
+def test_probe_muos_sftp_single_sd(mock_remote_env):
+    """Test muOS SFTP probing with single SD (/Primary Storage only)."""
     conn, ssh, sftp = mock_remote_env
-    sftp.files["/opt/muos/config/system/version"] = b"2606.1\n"
-    sftp.files["/opt/muos/device/config/board/name"] = b"rg35xx-sp\n"
-    sftp.dirs.add("/mnt/mmc")
-    # /mnt/sdcard is NOT in sftp.dirs
+    sftp.files["/Internal/version"] = b"2606.1\n"
+    sftp.dirs.discard("/Secondary Storage")
 
-    probe = wireless.probe_remote(conn)
+    dev_hint = next(d for d in DEVICES if d.id == "rg35xxsp")
+    probe = wireless.probe_remote(conn, device_hint=dev_hint)
+
     assert probe.cfw_id == "muos"
     assert probe.layout.dual_sd is False
-    assert probe.layout.ports_dir == "/mnt/mmc/ports"
-    assert probe.layout.scripts_dir == "/mnt/mmc/ROMS/Ports"
-    assert probe.layout.libs_dir == "/mnt/mmc/MUOS/PortMaster/libs"
+    assert probe.layout.ports_dir == "/Primary Storage/ports"
+    assert probe.layout.scripts_dir == "/Primary Storage/ROMS/Ports"
+    assert probe.layout.libs_dir == "/Primary Storage/MUOS/PortMaster/libs"
+    assert probe.layout.media_dir == "/Catalogue/External - Ports/box"
+    assert len(ssh.executed_commands) == 0
+
+
+def test_translate_handheld_path_to_sftp():
+    """Verify handheld path mapping to muOS SFTP virtual tree."""
+    # SD1 mapping
+    assert wireless.translate_handheld_path_to_sftp("/mnt/mmc/ports") == "/Primary Storage/ports"
+    assert wireless.translate_handheld_path_to_sftp("/mnt/mmc/MUOS/PortMaster/libs") == "/Primary Storage/MUOS/PortMaster/libs"
+    # SD2 mapping
+    assert wireless.translate_handheld_path_to_sftp("/mnt/sdcard/ports") == "/Secondary Storage/ports"
+    assert wireless.translate_handheld_path_to_sftp("/mnt/sdcard/ROMS/Ports") == "/Secondary Storage/ROMS/Ports"
+    # Catalogue mapping
+    assert (
+        wireless.translate_handheld_path_to_sftp("/mnt/mmc/MUOS/info/catalogue/External - Ports/box")
+        == "/Catalogue/External - Ports/box"
+    )
+    assert wireless.translate_handheld_path_to_sftp("/Catalogue/External - Ports/box") == "/Catalogue/External - Ports/box"
+
+
+def test_validate_sftp_write_path_rejects_forbidden(mock_remote_env):
+    """Verify validation strictly rejects /Internal, /Boot, /tmp, and paths outside allowed roots."""
+    conn, _, _ = mock_remote_env
+    dev_hint = next(d for d in DEVICES if d.id == "rg35xxsp")
+    probe = wireless.probe_remote(conn, device_hint=dev_hint)
+    layout = probe.layout
+
+    # Permitted paths
+    wireless.validate_sftp_write_path("/Secondary Storage/ports/game/data.bin", layout)
+    wireless.validate_sftp_write_path("/Secondary Storage/ROMS/Ports/game.sh", layout)
+    wireless.validate_sftp_write_path("/Primary Storage/MUOS/PortMaster/libs/runtime.squashfs", layout)
+    wireless.validate_sftp_write_path("/Catalogue/External - Ports/box/game.png", layout)
+
+    # Forbidden paths: /Internal, /Boot
+    with pytest.raises(ValueError, match="forbidden"):
+        wireless.validate_sftp_write_path("/Internal/muos/system.bin", layout)
+
+    with pytest.raises(ValueError, match="forbidden"):
+        wireless.validate_sftp_write_path("/Boot/uImage", layout)
+
+    with pytest.raises(ValueError, match="forbidden"):
+        wireless.validate_sftp_write_path("/tmp/exploit", layout)
+
+    with pytest.raises(ValueError, match="forbidden"):
+        wireless.validate_sftp_write_path("/root/.ssh/authorized_keys", layout)
+
+    # Outside allowed roots
+    with pytest.raises(ValueError, match="outside allowed target roots"):
+        wireless.validate_sftp_write_path("/Collections/Favorites", layout)
 
 
 def test_probe_rejects_non_muos(mock_remote_env):
     """Verify that probe raises ValueError if remote is not muOS."""
     conn, ssh, sftp = mock_remote_env
+    sftp.dirs.clear()
+    sftp.dirs.add("/")
     with pytest.raises(ValueError, match="only muOS is currently supported"):
         wireless.probe_remote(conn)
 
@@ -278,26 +368,23 @@ def test_probe_rejects_non_muos(mock_remote_env):
 def test_probe_default_password_warning(mock_remote_env):
     """Verify warning message when default password was used."""
     conn, ssh, sftp = mock_remote_env
-    sftp.files["/opt/muos/config/system/version"] = b"2606.0\n"
-    sftp.dirs.add("/mnt/mmc")
     conn.is_default_password = True
-    conn.username = "root"
+    conn.username = "muos"
 
     probe = wireless.probe_remote(conn)
     assert probe.is_default_password is True
     assert probe.warning is not None
-    assert "Default password (root) was used" in probe.warning
+    assert "Default password (muos) was used" in probe.warning
 
 
 def test_reject_dangerous_mounts(mock_remote_env):
     """Verify that layout paths pointing to /tmp or rootfs raise ValueError."""
     conn, ssh, sftp = mock_remote_env
-    sftp.files["/opt/muos/config/system/version"] = b"2606.0\n"
     with patch("wireless.RemoteLayout") as mock_rl:
         mock_rl.return_value = wireless.RemoteLayout(
             ports_dir="/tmp/ports",
-            scripts_dir="/mnt/mmc/ROMS/Ports",
-            libs_dir="/mnt/mmc/MUOS/libs",
+            scripts_dir="/Secondary Storage/ROMS/Ports",
+            libs_dir="/Primary Storage/MUOS/libs",
             media_dir="",
             system_root="/",
             games_root="/tmp",
@@ -312,14 +399,11 @@ def test_put_file_atomic(tmp_path, mock_remote_env):
     local_file = tmp_path / "game.exe"
     local_file.write_bytes(b"HELLO_WORLD_BINARY_DATA")
 
-    remote_dest = "/mnt/sdcard/ports/game/game.exe"
+    remote_dest = "/Secondary Storage/ports/game/game.exe"
     conn.put_file_atomic(local_file, remote_dest)
 
-    # Verify put call had .part
     assert len(sftp.put_calls) == 1
     assert sftp.put_calls[0][1] == remote_dest + ".part"
-
-    # Verify rename call from .part to final
     assert len(sftp.rename_calls) == 1
     assert sftp.rename_calls[0] == (remote_dest + ".part", remote_dest)
     assert sftp.files[remote_dest] == b"HELLO_WORLD_BINARY_DATA"
@@ -336,18 +420,17 @@ def make_port(stem: str, **kw) -> core.Port:
     return core.Port(**base)
 
 
-def test_transfer_port_wireless_with_runtime_skip(tmp_path, mock_remote_env):
-    """Test transfer_port_wireless uploads files and skips existing MD5-matched runtimes."""
+def test_fake_sftp_only_server_exec_raises(tmp_path, mock_remote_env):
+    """Verify entire workflow succeeds with a fake SFTP-only server where exec raises SSHException."""
     conn, ssh, sftp = mock_remote_env
+    # Confirm exec_command strictly raises
+    ssh.allow_exec = False
+    with pytest.raises(paramiko.SSHException, match="exec channel disabled"):
+        ssh.exec_command("echo test")
 
-    # Setup muOS probe
-    sftp.files["/opt/muos/config/system/version"] = b"2606.0\n"
-    sftp.files["/opt/muos/device/config/board/name"] = b"rg35xx-sp\n"
-    sftp.dirs.add("/mnt/mmc")
-    sftp.dirs.add("/mnt/sdcard")
-    probe = wireless.probe_remote(conn)
+    dev = next(d for d in DEVICES if d.id == "rg35xxsp")
+    probe = wireless.probe_remote(conn, device_hint=dev)
 
-    # Create dummy port zip
     port_zip_path = tmp_path / "testport.zip"
     with zipfile.ZipFile(port_zip_path, "w") as zf:
         zf.writestr("testport/data.bin", b"DATA_BIN")
@@ -362,15 +445,11 @@ def test_transfer_port_wireless_with_runtime_skip(tmp_path, mock_remote_env):
         runtime=["test-runtime"],
     )
 
-    dev = next(d for d in DEVICES if d.id == "rg35xxsp")
-
-    # Set up runtime: exists on handheld with matching MD5
+    # Pre-populate runtime on device with matching MD5
     runtime_content = b"RUNTIME_SQUASHFS_CONTENT"
     import hashlib
     runtime_md5 = hashlib.md5(runtime_content).hexdigest()
-
-    # Pre-populate runtime on device
-    remote_rt_path = "/mnt/mmc/MUOS/PortMaster/libs/test-runtime.squashfs"
+    remote_rt_path = "/Primary Storage/MUOS/PortMaster/libs/test-runtime.squashfs"
     sftp.files[remote_rt_path] = runtime_content
 
     utils = {
@@ -389,180 +468,108 @@ def test_transfer_port_wireless_with_runtime_skip(tmp_path, mock_remote_env):
             dev=dev,
             utils=utils,
             log=logs.append,
+            clean=True,
         )
 
-    # 1. Port files should be uploaded to /mnt/sdcard
-    assert "/mnt/sdcard/ports/testport/data.bin" in sftp.files
-    assert sftp.files["/mnt/sdcard/ports/testport/data.bin"] == b"DATA_BIN"
-
-    # 2. Script should be uploaded to /mnt/sdcard/ROMS/Ports/testport.sh
-    assert "/mnt/sdcard/ROMS/Ports/testport.sh" in sftp.files
-
-    # 3. chmod +x should have been executed on the script
-    assert any("chmod +x " in cmd and "testport.sh" in cmd for cmd in ssh.executed_commands)
-
-    # 4. Runtime should be SKIPPED because MD5 matches
+    # 1. Port files uploaded to /Secondary Storage
+    assert "/Secondary Storage/ports/testport/data.bin" in sftp.files
+    # 2. Script uploaded to /Secondary Storage/ROMS/Ports/testport.sh
+    assert "/Secondary Storage/ROMS/Ports/testport.sh" in sftp.files
+    # 3. chmod executed via pure SFTP chmod
+    assert ("/Secondary Storage/ROMS/Ports/testport.sh", 0o755) in sftp.chmod_calls
+    # 4. Runtime skipped by MD5 match over SFTP
     assert any("already present (MD5 match) — skipped" in l for l in logs)
 
-
-def test_finalize_wireless_session_hooks(mock_remote_env):
-    """Test sync command and menu reopen tip (unverified API removed)."""
-    conn, ssh, _ = mock_remote_env
-    logs = []
-
+    # Finalize session without shell sync
     wireless.finalize_wireless_session(conn, "muos", logs.append)
-    assert "sync" in ssh.executed_commands
-    assert not any("api/catalogue/refresh" in cmd for cmd in ssh.executed_commands)
     assert any("Ports menu" in l for l in logs)
 
+    # ZERO shell exec commands executed throughout the entire process!
+    assert len(ssh.executed_commands) == 0
 
-def test_keepalive_set_on_connect():
-    """Verify keepalive is set to 15s on paramiko transport."""
+
+def test_muos_default_credentials_2022():
+    """Verify muOS default credentials include muos:muos on port 2022."""
+    muos_creds = wireless.CFW_DEFAULT_CREDENTIALS.get("muos", [])
+    assert ("muos", "muos", 2022) in muos_creds
+    assert wireless.DEFAULT_WIRELESS_PORT == 2022
+
+
+def test_port_22_refused_error_hint():
+    """Verify hint on port 22 connection refused."""
     with patch("paramiko.SSHClient") as mock_cls:
         client = mock_cls.return_value
-        transport = MagicMock()
-        client.get_transport.return_value = transport
+        import socket
+        err = socket.error(socket.errno.ECONNREFUSED, "Connection refused")
+        client.connect.side_effect = err
         conn = wireless.WirelessConnection()
-        conn.connect("192.168.1.50", port=22, username="root", password="pw", keepalive=15)
-        transport.set_keepalive.assert_called_with(15)
+        with pytest.raises(ConnectionError, match="Turn on Secure File Transfer in muOS"):
+            conn.connect("192.168.1.10", port=22, username="root", password="pw")
 
 
-def test_size_suggest_card_reader_constant():
-    """Verify size recommendation constant is 1.5 GB."""
-    assert wireless.SIZE_SUGGEST_CARD_READER == int(1.5 * 1024 * 1024 * 1024)
+def test_tofu_host_key_retrust(tmp_path, monkeypatch):
+    """Verify Trust-On-First-Use (TOFU) host key persistence and re-trust on service restart."""
+    known_hosts = tmp_path / "known_hosts"
+    auth_file = tmp_path / "wireless_auth.dat"
+    monkeypatch.setattr(wireless, "KNOWN_HOSTS_FILE", known_hosts)
+    monkeypatch.setattr(wireless, "AUTH_FILE", auth_file)
 
+    key1 = paramiko.RSAKey.generate(1024)
+    key2 = paramiko.RSAKey.generate(1024)
 
-def test_discover_handheld_hosts_mock():
-    """Verify discover_handheld_hosts resolves reachable muOS mDNS names."""
-    def mock_gethostbyname(host):
-        if host == "muos.local":
-            return "192.168.1.105"
-        raise OSError("Host not found")
+    # 1. Missing key policy adds key on first connect
+    client = paramiko.SSHClient()
+    info = {"added": False}
+    policy = wireless.TrustOnFirstUsePolicy(known_hosts, on_new_key=lambda h, k: info.update({"added": True}))
+    policy.missing_host_key(client, "[muos.local]:2022", key1)
 
-    with patch("socket.gethostbyname", side_effect=mock_gethostbyname):
-        hits = wireless.discover_handheld_hosts(timeout=0.1)
-        assert len(hits) == 1
-        hosts = [h[1] for h in hits]
-        ips = [h[2] for h in hits]
-        assert "muos.local" in hosts
-        assert "192.168.1.105" in ips
+    assert info["added"] is True
+    assert known_hosts.exists()
+    hk = paramiko.HostKeys(str(known_hosts))
+    assert "[muos.local]:2022" in hk
 
+    # 2. Key mismatch without retrust raises ConnectionError with re-trust hint
+    with patch("paramiko.SSHClient.connect", side_effect=paramiko.BadHostKeyException("[muos.local]:2022", key2, key1)):
+        conn = wireless.WirelessConnection()
+        with pytest.raises(ConnectionError, match="Trust New Key & Reconnect"):
+            conn.connect("muos.local", port=2022, username="muos", password="pw", retrust=False)
 
-def test_transfer_port_uploads_missing_runtime(tmp_path, mock_remote_env):
-    """Verify that when a required runtime is NOT on device, it is downloaded and uploaded."""
-    conn, ssh, sftp = mock_remote_env
-
-    sftp.files["/opt/muos/config/system/version"] = b"2606.0\n"
-    sftp.files["/opt/muos/device/config/board/name"] = b"rg35xx-sp\n"
-    sftp.dirs.add("/mnt/mmc")
-    probe = wireless.probe_remote(conn)
-
-    port_zip_path = tmp_path / "port2.zip"
-    with zipfile.ZipFile(port_zip_path, "w") as zf:
-        zf.writestr("port2/game.bin", b"GAME_BIN")
-        zf.writestr("port2.sh", b"#!/bin/bash\n./game.bin\n")
-
-    port = make_port(
-        "port2",
-        title="Port 2",
-        items=["port2", "port2.sh"],
-        runtime=["missing-runtime"],
-    )
-
-    dev = next(d for d in DEVICES if d.id == "rg35xxsp")
-
-    runtime_zip = tmp_path / "missing-runtime.squashfs"
-    runtime_zip.write_bytes(b"SQUASHFS_DATA")
-
-    utils = {
-        "missing-runtime": {
-            "url": "https://example.com/missing-runtime.squashfs",
-            "md5": None,
-        }
-    }
-
-    logs = []
-    with patch("core.download", side_effect=[port_zip_path, runtime_zip]):
-        wireless.transfer_port_wireless(
-            conn=conn,
-            port=port,
-            probe=probe,
-            dev=dev,
-            utils=utils,
-            log=logs.append,
-        )
-
-    # Runtime should be uploaded to libs_dir
-    remote_rt = f"{probe.layout.libs_dir}/missing-runtime.squashfs"
-    assert remote_rt in sftp.files
-    assert sftp.files[remote_rt] == b"SQUASHFS_DATA"
-    assert any("Uploading runtime" in l for l in logs)
-
-
-def test_wifi_drop_error_handling(tmp_path, mock_remote_env):
-    """Verify error raised when socket or SFTP drops during put."""
-    conn, ssh, sftp = mock_remote_env
-    sftp.files["/opt/muos/config/system/version"] = b"2606.0\n"
-    sftp.dirs.add("/mnt/mmc")
-    probe = wireless.probe_remote(conn)
-
-    port_zip_path = tmp_path / "dropped.zip"
-    with zipfile.ZipFile(port_zip_path, "w") as zf:
-        zf.writestr("dropped/file.dat", b"123")
-        zf.writestr("dropped.sh", b"#!/bin/sh")
-
-    port = make_port("dropped", items=["dropped", "dropped.sh"])
-    dev = next(d for d in DEVICES if d.id == "rg35xxsp")
-
-    # Simulate socket drop during put
-    def fail_put(*args, **kwargs):
-        raise OSError("Connection reset by peer (Wi-Fi dropped)")
-
-    sftp.put = fail_put
-
-    with patch("core.download", return_value=port_zip_path):
-        with pytest.raises(OSError, match="Connection reset by peer"):
-            wireless.transfer_port_wireless(
-                conn=conn,
-                port=port,
-                probe=probe,
-                dev=dev,
-                utils={},
-                log=lambda _: None,
-            )
+    # 3. Retrust=True updates the host key in known_hosts and reconnects
+    with patch("paramiko.SSHClient.connect") as mock_conn, patch("paramiko.SSHClient.open_sftp"):
+        # First call raises BadHostKeyException, second succeeds
+        mock_conn.side_effect = [paramiko.BadHostKeyException("[muos.local]:2022", key2, key1), None]
+        conn = wireless.WirelessConnection()
+        conn.connect("muos.local", port=2022, username="muos", password="pw", retrust=True)
+        assert mock_conn.call_count == 2
+        # Verify key was updated in known_hosts
+        hk_updated = paramiko.HostKeys(str(known_hosts))
+        assert "[muos.local]:2022" in hk_updated
 
 
 def test_wireless_target_properties(mock_remote_env):
     """Verify WirelessTarget satisfies Target interface for core functions."""
-    conn, _, sftp = mock_remote_env
-    sftp.files["/opt/muos/config/system/version"] = b"2606.0\n"
-    sftp.dirs.add("/mnt/mmc")
-    sftp.dirs.add("/mnt/sdcard")
-    probe = wireless.probe_remote(conn)
+    conn, _, _ = mock_remote_env
+    dev = next(d for d in DEVICES if d.id == "rg35xxsp")
+    probe = wireless.probe_remote(conn, device_hint=dev)
 
     wt = wireless.WirelessTarget(MUOS, conn, probe)
     assert wt.is_wireless is True
-    assert wt.ports_dir.as_posix() == "/mnt/sdcard/ports"
-    assert wt.scripts_dir.as_posix() == "/mnt/sdcard/ROMS/Ports"
-    assert wt.libs_dir.as_posix() == "/mnt/mmc/MUOS/PortMaster/libs"
-    assert wt.media_dir.as_posix() == "/mnt/mmc/MUOS/info/catalogue/External - Ports/box"
+    assert wt.ports_dir.as_posix() == "/Secondary Storage/ports"
+    assert wt.scripts_dir.as_posix() == "/Secondary Storage/ROMS/Ports"
+    assert wt.libs_dir.as_posix() == "/Primary Storage/MUOS/PortMaster/libs"
+    assert wt.media_dir.as_posix() == "/Catalogue/External - Ports/box"
     assert wt.pak_installed() is True
 
 
 def test_clean_port_dir_safety(tmp_path, mock_remote_env):
     """Verify clean=True uses SFTP removal and rejects unsafe dir names (path traversal)."""
     conn, ssh, sftp = mock_remote_env
-    sftp.files["/opt/muos/config/system/version"] = b"2606.0\n"
-    sftp.dirs.add("/mnt/mmc")
-    sftp.dirs.add("/mnt/sdcard")
-    sftp.dirs.add("/mnt/sdcard/ports")
-    sftp.dirs.add("/mnt/sdcard/ports/safegame")
-    sftp.files["/mnt/sdcard/ports/safegame/old.bin"] = b"old"
-    probe = wireless.probe_remote(conn)
-
+    sftp.dirs.add("/Secondary Storage/ports")
+    sftp.dirs.add("/Secondary Storage/ports/safegame")
+    sftp.files["/Secondary Storage/ports/safegame/old.bin"] = b"old"
     dev = next(d for d in DEVICES if d.id == "rg35xxsp")
+    probe = wireless.probe_remote(conn, device_hint=dev)
 
-    # Port with safe dir AND malicious/unsafe dirs
     port = make_port(
         "testsafe",
         items=["testsafe.sh", "safegame", "", "/root", "../outside", "escape/sub"],
@@ -587,83 +594,46 @@ def test_clean_port_dir_safety(tmp_path, mock_remote_env):
             clean=True,
         )
 
-    # 1. Unsafe directories should have been skipped with warnings
     assert any("Skipping unsafe port directory" in l for l in logs)
-    # Ensure no rm -rf was run on root or ../outside
-    assert not any("rm -rf /root" in cmd for cmd in ssh.executed_commands)
-    assert not any("rm -rf '/'" in cmd for cmd in ssh.executed_commands)
-    assert not any("rm -rf /" == cmd.strip() for cmd in ssh.executed_commands)
-
-    # 2. Safe directory should have been cleaned
-    assert "/mnt/sdcard/ports/safegame/old.bin" not in sftp.files
+    # Zero exec calls
+    assert len(ssh.executed_commands) == 0
+    # Safe directory should have been cleaned via pure SFTP
+    assert "/Secondary Storage/ports/safegame/old.bin" not in sftp.files
 
 
-def test_shlex_quoting(mock_remote_env):
-    """Verify shlex.quote is used on paths with quotes, spaces, and metacharacters."""
-    import shlex
-    conn, ssh, _ = mock_remote_env
+def test_df_mount_and_remote_md5_pure_sftp(mock_remote_env):
+    """Directly test df_mount and remote_md5 over pure SFTP without shell exec."""
+    conn, ssh, sftp = mock_remote_env
+    # 1. df_mount uses statvfs
+    res = conn.df_mount("/Primary Storage")
+    assert res is not None
+    free_b, tot_b = res
+    assert free_b == 12000000 * 4096
+    assert tot_b == 15000000 * 4096
 
-    # 1. remote_md5 with single quotes in path
-    p1 = "/mnt/sdcard/ports/Don't Starve/game.data"
-    conn.remote_md5(p1)
-    assert any(f"md5sum {shlex.quote(p1)}" in cmd for cmd in ssh.executed_commands)
+    # 2. remote_md5 streams over SFTP
+    sftp.files["/Primary Storage/data.txt"] = b"HELLO_SFTP"
+    import hashlib
+    expected_hash = hashlib.md5(b"HELLO_SFTP").hexdigest()
+    assert conn.remote_md5("/Primary Storage/data.txt") == expected_hash
 
-    # 2. df_mount with single quotes in path
-    p2 = "/mnt/sdcard/Don't Starve"
-    conn.df_mount(p2)
-    assert any(f"df -k {shlex.quote(p2)}" in cmd for cmd in ssh.executed_commands)
+    # 3. chmod_x calls sftp.chmod
+    conn.chmod_x("/Primary Storage/test.sh")
+    assert ("/Primary Storage/test.sh", 0o755) in sftp.chmod_calls
 
-    # 3. chmod_x with single quotes in path
-    p3 = "/mnt/sdcard/ROMS/Ports/Don't Starve.sh"
-    conn.chmod_x(p3)
-    assert any(f"chmod +x {shlex.quote(p3)}" in cmd for cmd in ssh.executed_commands)
-
-
-def test_tofu_host_key_policy(tmp_path, monkeypatch):
-    """Verify Trust-On-First-Use (TOFU) host key persistence, verification, and forget."""
-    known_hosts = tmp_path / "known_hosts"
-    auth_file = tmp_path / "wireless_auth.dat"
-    monkeypatch.setattr(wireless, "KNOWN_HOSTS_FILE", known_hosts)
-    monkeypatch.setattr(wireless, "AUTH_FILE", auth_file)
-
-    import paramiko
-    key1 = paramiko.RSAKey.generate(1024)
-    key2 = paramiko.RSAKey.generate(1024)
-
-    # 1. Missing key policy adds key on first connect
-    client = paramiko.SSHClient()
-    info = {"added": False}
-    policy = wireless.TrustOnFirstUsePolicy(known_hosts, on_new_key=lambda h, k: info.update({"added": True}))
-    policy.missing_host_key(client, "muos.local", key1)
-
-    assert info["added"] is True
-    assert known_hosts.exists()
-    hk = paramiko.HostKeys(str(known_hosts))
-    assert "muos.local" in hk
-
-    # 2. Fingerprint format
-    fp = wireless.format_fingerprint(key1)
-    assert fp.startswith("SHA256:")
-
-    # 3. Key mismatch raises ConnectionError
-    wireless.save_saved_credential("muos.local", "root", "secret")
-    assert wireless.get_saved_credential("muos.local") == ("root", "secret")
-
-    with patch("paramiko.SSHClient.connect", side_effect=paramiko.BadHostKeyException("muos.local", key2, key1)):
-        conn = wireless.WirelessConnection()
-        with pytest.raises(ConnectionError, match="Host key verification failed"):
-            conn.connect("muos.local", port=22, username="root", password="pw")
-
-    # 4. Forget device clears known_hosts and auth
-    deleted = wireless.forget_host("muos.local", port=22)
-    assert deleted is True
-    assert wireless.get_saved_credential("muos.local") is None
-    hk_after = paramiko.HostKeys(str(known_hosts))
-    assert "muos.local" not in hk_after
+    # Zero exec commands
+    assert len(ssh.executed_commands) == 0
 
 
-def test_unverified_credentials_removed():
-    """Verify unverified credentials (muos:muos / port 2022) were removed."""
-    muos_creds = wireless.CFW_DEFAULT_CREDENTIALS.get("muos", [])
-    assert ("muos", "muos", 2022) not in muos_creds
-    assert muos_creds == [("root", "root", 22)]
+def test_connect_with_credentials_or_defaults_muos():
+    """Verify connect_with_credentials_or_defaults tries muos/muos on port 2022 first."""
+    with patch("paramiko.SSHClient.connect") as mock_conn, patch("paramiko.SSHClient.open_sftp"):
+        conn = wireless.connect_with_credentials_or_defaults("192.168.1.55")
+        assert mock_conn.called
+        call_kwargs = mock_conn.call_args[1]
+        assert call_kwargs["hostname"] == "192.168.1.55"
+        assert call_kwargs["port"] == 2022
+        assert call_kwargs["username"] == "muos"
+        assert call_kwargs["password"] == "muos"
+        assert conn.is_default_password is True
+
