@@ -782,6 +782,10 @@ class CfwPage(QWidget):
 
     def _refresh_status(self, *_):
         t_target = self.target()
+        if self._wireless_target is not None:
+            # Wi-Fi status text is set when connecting; there is no local folder to check.
+            self.changed.emit()
+            return
         if not t_target:
             self.card1_widget.hide()
             self.pak_widget.hide()
@@ -942,6 +946,11 @@ class CfwPage(QWidget):
 
     def ready(self) -> bool:
         t_target = self.target()
+        if self._wireless_target is not None:
+            # Wi-Fi target: the probe already checked the CFW and layout; there is no local card path.
+            wt = self._wireless_target
+            ver_ok, _ = core.check_cfw_version_minimum(wt.cfw, wt.probe.cfw_version)
+            return bool(wt.conn) and ver_ok
         if not t_target or not t_target.root.exists():
             return False
         if core.is_pc_drive(t_target.root, t_target.cfw if not t_target.custom else None):
