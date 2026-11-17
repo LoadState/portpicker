@@ -1,8 +1,14 @@
 """PortPicker wireless transfer module: SSH/SFTP connection, probe, atomic transfer, and hooks.
 
-Trimmed for muOS on Anbernic H700 / supported handhelds (mDNS muos.local + manual IP).
-Handles mDNS discovery, DPAPI credential storage, read-only SSH probe,
-atomic SFTP push (.part -> rename), runtime MD5 skip, and muOS catalogue refresh.
+Supports muOS on Anbernic H700 / supported handhelds via Secure File Transfer (SFTP).
+Default port: 2022, username/password: muos / muos (official doc: muos.dev/web/sftp).
+Detection: SFTP virtual root with /Primary Storage, /Internal, /Catalogue.
+Path mapping:
+  /mnt/mmc    → /Primary Storage (SD1: system, runtimes, PortMaster libs)
+  /mnt/sdcard → /Secondary Storage (SD2: ROMS/ports)
+  catalogue   → /Catalogue (box art: /Catalogue/External - Ports/box)
+Forbidden paths: /Internal, /Boot, /tmp, /root.
+Pure SFTP only: zero shell exec commands (no uname, md5sum, df, chmod, rm, sync shell calls).
 """
 from __future__ import annotations
 
@@ -12,12 +18,9 @@ import hashlib
 import json
 import os
 import posixpath
-import re
-import shlex
 import shutil
 import socket
 import sys
-import time
 import zipfile
 from dataclasses import dataclass, field
 from pathlib import Path
@@ -27,7 +30,7 @@ import paramiko
 
 from i18n import t as _tr
 import core
-from profiles import CFWS, CFW, Device, DEVICES, MUOS
+from profiles import CFW, Device, DEVICES, MUOS
 
 # --------------------------------------------------------------------------
 # Types and Constants
@@ -38,25 +41,88 @@ Progress = Callable[[int, int], None]
 
 ONE_GB = 1024 * 1024 * 1024
 SIZE_SUGGEST_CARD_READER = int(1.5 * ONE_GB)  # 1.5 GB
+DEFAULT_WIRELESS_PORT = 2022
 
 KNOWN_MDNS_HOSTS = [
     ("muos.local", "muos"),
 ]
 
 # Default credentials for muOS: list of (user, password, port)
+# Official muOS Secure File Transfer runs SFTP on port 2022 with muos/muos.
 CFW_DEFAULT_CREDENTIALS: dict[str, list[tuple[str, str, int]]] = {
     "muos": [
+        ("muos", "muos", 2022),
         ("root", "root", 22),
     ],
 }
 
 GENERIC_DEFAULT_CREDENTIALS = [
+    ("muos", "muos", 2022),
     ("root", "root", 22),
 ]
 
+FORBIDDEN_SFTP_PREFIXES = (
+    "/Internal",
+    "/Boot",
+    "/tmp",
+    "/root",
+    "/proc",
+    "/sys",
+    "/dev",
+    "/etc",
+    "/usr",
+    "/bin",
+    "/sbin",
+)
+
 
 # --------------------------------------------------------------------------
-# DPAPI / Secure Credential Storage
+# Path Mapping and Safety Validation
+# --------------------------------------------------------------------------
+
+def translate_handheld_path_to_sftp(path: str) -> str:
+    """Translate standard handheld mount paths (/mnt/mmc, /mnt/sdcard, catalogue) to muOS SFTP virtual tree paths."""
+    p = path.replace("\\", "/")
+    if "/MUOS/info/catalogue" in p:
+        idx = p.find("/MUOS/info/catalogue")
+        suffix = p[idx + len("/MUOS/info/catalogue"):]
+        return f"/Catalogue{suffix}"
+    if p.lower().startswith("/catalogue"):
+        return p
+    if p.startswith("/mnt/mmc"):
+        return "/Primary Storage" + p[len("/mnt/mmc"):]
+    if p.startswith("/mnt/sdcard"):
+        return "/Secondary Storage" + p[len("/mnt/sdcard"):]
+    return p
+
+
+def validate_sftp_write_path(path: str, layout: RemoteLayout) -> None:
+    """Ensure path is within permitted storage directories and never in /Internal, /Boot, or rootfs."""
+    p = posixpath.normpath(path.replace("\\", "/"))
+    # Check forbidden prefixes
+    for forbidden in FORBIDDEN_SFTP_PREFIXES:
+        if p == forbidden or p.startswith(forbidden + "/"):
+            raise ValueError(f"Writing to protected or restricted path is forbidden: {p}")
+
+    allowed_roots = [
+        layout.ports_dir.rstrip("/"),
+        layout.scripts_dir.rstrip("/"),
+        layout.libs_dir.rstrip("/"),
+    ]
+    if layout.media_dir:
+        allowed_roots.append(layout.media_dir.rstrip("/"))
+
+    is_safe = False
+    for root in allowed_roots:
+        if p == root or p.startswith(root + "/"):
+            is_safe = True
+            break
+    if not is_safe:
+        raise ValueError(f"Path is outside allowed target roots: {p}")
+
+
+# --------------------------------------------------------------------------
+# DPAPI / Secure Credential Storage & Host Key Management
 # --------------------------------------------------------------------------
 
 AUTH_FILE = core.APP_DIR / "wireless_auth.dat"
@@ -90,6 +156,31 @@ class TrustOnFirstUsePolicy(paramiko.MissingHostKeyPolicy):
             pass
         if self.on_new_key:
             self.on_new_key(hostname, key)
+
+
+def update_host_key(host: str, port: int, key: paramiko.PKey) -> None:
+    """Update or replace the saved host key for host:port in known_hosts (for TOFU re-trusting)."""
+    try:
+        KNOWN_HOSTS_FILE.parent.mkdir(parents=True, exist_ok=True)
+        hk = paramiko.HostKeys()
+        if KNOWN_HOSTS_FILE.exists():
+            try:
+                hk.load(str(KNOWN_HOSTS_FILE))
+            except Exception:
+                pass
+        entry_name = host if port == 22 else f"[{host}]:{port}"
+        h_lower = host.lower()
+        to_del = []
+        for k in list(hk.keys()):
+            k_norm = k.lower()
+            if k_norm == h_lower or k_norm == entry_name.lower() or k_norm.startswith(f"[{h_lower}]:"):
+                to_del.append(k)
+        for k in to_del:
+            del hk[k]
+        hk.add(entry_name, key.get_name(), key)
+        hk.save(str(KNOWN_HOSTS_FILE))
+    except Exception:
+        pass
 
 
 def _win_dpapi_protect(data: bytes) -> bytes:
@@ -229,11 +320,8 @@ def delete_saved_credential(host: str) -> bool:
     return False
 
 
-def forget_host(host: str, port: int = 22) -> bool:
-    """Clear saved host keys and credentials for host.
-
-    Used when host key changes due to OS reinstall or device reset.
-    """
+def forget_host(host: str, port: int = DEFAULT_WIRELESS_PORT) -> bool:
+    """Clear saved host keys and credentials for host."""
     deleted = False
     if KNOWN_HOSTS_FILE.exists():
         try:
@@ -257,17 +345,20 @@ def forget_host(host: str, port: int = 22) -> bool:
 
 
 # --------------------------------------------------------------------------
-# Wireless Connection Wrapper
+# Wireless Connection Wrapper (Pure SFTP - No Shell Exec)
 # --------------------------------------------------------------------------
 
 class WirelessConnection:
-    """Encapsulates paramiko SSH & SFTP connections with TOFU host-key verification, keepalive, and helpers."""
+    """Encapsulates paramiko SSH & SFTP connections with TOFU host-key verification, keepalive, and helpers.
+
+    Pure SFTP: operates entirely over SFTP with zero remote shell exec calls.
+    """
 
     def __init__(self, client: paramiko.SSHClient | None = None):
         self.client: paramiko.SSHClient | None = client
         self.sftp: paramiko.SFTPClient | None = None
         self.host: str = ""
-        self.port: int = 22
+        self.port: int = DEFAULT_WIRELESS_PORT
         self.username: str = ""
         self.is_default_password: bool = False
         self.host_key_fingerprint: str = ""
@@ -276,12 +367,15 @@ class WirelessConnection:
     def connect(
         self,
         host: str,
-        port: int = 22,
-        username: str = "root",
-        password: str = "root",
+        port: int = DEFAULT_WIRELESS_PORT,
+        username: str = "muos",
+        password: str = "muos",
         timeout: float = 8.0,
         keepalive: int = 15,
+        retrust: bool = False,
     ) -> None:
+        self.close()
+
         client = paramiko.SSHClient()
         if KNOWN_HOSTS_FILE.exists():
             try:
@@ -312,14 +406,45 @@ class WirelessConnection:
         except paramiko.BadHostKeyException as e:
             got_fp = format_fingerprint(e.key)
             exp_fp = format_fingerprint(e.expected_key)
-            raise ConnectionError(
-                f"Host key verification failed for {host}!\n"
-                f"Expected: {exp_fp}\n"
-                f"Received: {got_fp}\n\n"
-                f"The device's host key has changed. This could indicate an attacker on the network (MITM), "
-                f"or the OS was reinstalled on the handheld.\n"
-                f"If you reinstalled muOS, click 'Forget Device' and reconnect."
-            ) from e
+            if retrust:
+                update_host_key(host, port, e.key)
+                client.close()
+                client = paramiko.SSHClient()
+                if KNOWN_HOSTS_FILE.exists():
+                    try:
+                        client.load_host_keys(str(KNOWN_HOSTS_FILE))
+                    except Exception:
+                        pass
+                client.set_missing_host_key_policy(TrustOnFirstUsePolicy(KNOWN_HOSTS_FILE, on_new_key=on_first_trust))
+                client.connect(
+                    hostname=host,
+                    port=port,
+                    username=username,
+                    password=password,
+                    timeout=timeout,
+                    banner_timeout=timeout,
+                    auth_timeout=timeout,
+                    look_for_keys=False,
+                    allow_agent=False,
+                )
+            else:
+                raise ConnectionError(
+                    f"Host key verification failed for {host}:{port}!\n"
+                    f"Expected: {exp_fp}\n"
+                    f"Received: {got_fp}\n\n"
+                    f"The device's host key has changed (common when muOS Secure File Transfer restarts).\n"
+                    f"Click 'Trust New Key & Reconnect' to trust this device."
+                ) from e
+        except (socket.error, paramiko.SSHException) as e:
+            err_str = str(e).lower()
+            is_refused = "connection refused" in err_str or getattr(e, "errno", None) == socket.errno.ECONNREFUSED
+            if port == 22 and is_refused:
+                raise ConnectionError(
+                    f"Connection refused on port 22 for {host}.\n"
+                    f"Turn on Secure File Transfer in muOS (port 2022):\n"
+                    f"Configuration > Connectivity > Web Services."
+                ) from e
+            raise
 
         transport = client.get_transport()
         if transport is not None:
@@ -355,20 +480,16 @@ class WirelessConnection:
             self.sftp = None
         if self.client:
             try:
+                t = self.client.get_transport()
+                if t:
+                    t.close()
+            except Exception:
+                pass
+            try:
                 self.client.close()
             except Exception:
                 pass
             self.client = None
-
-    def exec(self, cmd: str, timeout: float = 15.0) -> tuple[int, str, str]:
-        """Execute a shell command over SSH."""
-        if not self.client:
-            raise ConnectionError("SSH not connected")
-        stdin, stdout, stderr = self.client.exec_command(cmd, timeout=timeout)
-        exit_code = stdout.channel.recv_exit_status()
-        out = stdout.read().decode("utf-8", errors="replace")
-        err = stderr.read().decode("utf-8", errors="replace")
-        return exit_code, out, err
 
     def read_text(self, remote_path: str) -> str | None:
         """Read content of remote file, or None if missing/unreadable."""
@@ -423,7 +544,7 @@ class WirelessConnection:
                     pass
 
     def rmtree(self, remote_path: str) -> None:
-        """Recursively remove a directory and all its contents over SFTP."""
+        """Recursively remove a directory and all its contents over pure SFTP."""
         if not self.sftp:
             raise ConnectionError("SFTP not connected")
         import stat as pystat
@@ -479,14 +600,16 @@ class WirelessConnection:
             pass
         self.sftp.rename(part_path, remote_path)
 
-    def remote_md5(self, remote_path: str) -> str | None:
-        """Compute MD5 of a remote file via md5sum command or reading chunks."""
-        code, out, _ = self.exec(f"md5sum {shlex.quote(remote_path)} 2>/dev/null", timeout=5.0)
-        if code == 0 and out.strip():
-            return out.strip().split()[0].lower()
-        # Fallback: stream MD5 over SFTP
+    def remote_md5(self, remote_path: str, max_size: int = 10 * 1024 * 1024) -> str | None:
+        """Compute MD5 of a remote file via SFTP chunk streaming.
+
+        Pure SFTP: never executes shell commands. Only streams if file size <= max_size.
+        """
+        if not self.sftp:
+            return None
         try:
-            if not self.sftp:
+            st = self.sftp.stat(remote_path)
+            if getattr(st, "st_size", 0) > max_size:
                 return None
             h = hashlib.md5()
             with self.sftp.open(remote_path, "rb") as f:
@@ -500,26 +623,42 @@ class WirelessConnection:
             return None
 
     def df_mount(self, path: str) -> tuple[int, int] | None:
-        """Get (free_bytes, total_bytes) for mount containing path."""
-        code, out, _ = self.exec(f"df -k {shlex.quote(path)} 2>/dev/null", timeout=5.0)
-        if code == 0:
-            lines = [line.strip() for line in out.splitlines() if line.strip()]
-            if len(lines) >= 2:
-                parts = lines[-1].split()
-                if len(parts) >= 4:
-                    try:
-                        total_k = int(parts[1])
-                        avail_k = int(parts[3])
-                        return avail_k * 1024, total_k * 1024
-                    except ValueError:
-                        pass
+        """Get (free_bytes, total_bytes) for mount containing path.
+
+        Pure SFTP via OpenSSH statvfs extension (CMD_EXTENDED 200). Never executes shell commands.
+        If unsupported by the SFTP server, returns None.
+        """
+        if not self.sftp:
+            return None
+        try:
+            from paramiko.sftp_client import CMD_EXTENDED
+            t, msg = self.sftp._request(CMD_EXTENDED, "statvfs@openssh.com", path)
+            if t == 201 and msg:  # CMD_EXTENDED_REPLY
+                bsize = msg.get_int64()
+                frsize = msg.get_int64() or bsize or 4096
+                blocks = msg.get_int64()
+                bfree = msg.get_int64()
+                bavail = msg.get_int64()
+                free_bytes = bavail * frsize
+                total_bytes = blocks * frsize
+                if free_bytes > 0 or total_bytes > 0:
+                    return free_bytes, total_bytes
+        except Exception:
+            pass
         return None
 
-    def sync(self) -> None:
-        self.exec("sync", timeout=10.0)
-
     def chmod_x(self, remote_path: str) -> None:
-        self.exec(f"chmod +x {shlex.quote(remote_path)}", timeout=5.0)
+        """Set execute permissions (+x, 0o755) via pure SFTP."""
+        if not self.sftp:
+            return
+        try:
+            self.sftp.chmod(remote_path, 0o755)
+        except Exception:
+            pass
+
+    def sync(self) -> None:
+        """Filesystem sync. No-op on SFTP-only servers (no shell)."""
+        pass
 
 
 # --------------------------------------------------------------------------
@@ -569,7 +708,6 @@ def _read_probe_file(conn: WirelessConnection, paths: list[str]) -> str | None:
 def match_device_from_string(raw: str) -> Device | None:
     """Match raw model string (e.g. 'rg35xx-sp', 'tg5040') to a PortPicker Device."""
     s = raw.lower().replace("-", "").replace("_", "").replace(" ", "")
-    # Check exact/substring matches
     if "rg35xxsp" in s:
         return next((d for d in DEVICES if d.id == "rg35xxsp"), None)
     if "brickpro" in s or "tg5040" in s:
@@ -593,55 +731,98 @@ def match_device_from_string(raw: str) -> Device | None:
     return None
 
 
-def probe_remote(conn: WirelessConnection) -> RemoteProbe:
-    """Inspect remote handheld over SSH (read-only) to detect CFW, Device, and mounts.
+def probe_remote(conn: WirelessConnection, device_hint: Device | None = None) -> RemoteProbe:
+    """Inspect remote handheld over SFTP (read-only) to detect CFW, Device, and mounts.
 
-    Scoped for muOS on Anbernic H700 / supported handhelds.
+    Scoped for muOS SFTP on Anbernic H700 / supported handhelds.
+    Detection rule: muOS SFTP = Primary Storage + Internal + Catalogue present at /
+    Pure SFTP: never executes shell commands.
     """
+    if not conn.sftp:
+        raise ConnectionError("SFTP connection not available")
+
     # 1. Detect muOS CFW
-    muos_ver = _read_probe_file(conn, ["/opt/muos/config/system/version", "/opt/muos/version"])
-    if not muos_ver:
-        if conn.isdir("/opt/muos"):
-            muos_ver = "unknown"
+    # Check muOS SFTP virtual tree listing at /
+    is_muos_sftp = False
+    root_entries: set[str] = set()
+    try:
+        entries = conn.sftp.listdir_attr("/")
+        root_entries = {e.filename for e in entries}
+        if {"Primary Storage", "Internal", "Catalogue"}.issubset(root_entries):
+            is_muos_sftp = True
+    except Exception:
+        try:
+            root_entries = set(conn.sftp.listdir("/"))
+            if {"Primary Storage", "Internal", "Catalogue"}.issubset(root_entries):
+                is_muos_sftp = True
+        except Exception:
+            root_entries = set()
+
+    cfw_ver = "unknown"
+    if is_muos_sftp:
+        ver_txt = _read_probe_file(conn, [
+            "/Internal/config/system/version",
+            "/Internal/version",
+            "/Internal/MUOS/config/system/version",
+        ])
+        cfw_ver = ver_txt or "muOS (SFTP)"
+    else:
+        # Fallback for traditional Linux rootfs if /opt/muos exists
+        muos_ver = _read_probe_file(conn, ["/opt/muos/config/system/version", "/opt/muos/version"])
+        if muos_ver:
+            cfw_ver = muos_ver
+        elif conn.isdir("/opt/muos"):
+            cfw_ver = "unknown"
         else:
             raise ValueError("Unsupported firmware: only muOS is currently supported for wireless transfer.")
 
     cfw_id = "muos"
     cfw_obj = MUOS
-    cfw_ver = muos_ver
 
-    # 2. Detect Device Model (Anbernic H700 focus)
-    board_str = _read_probe_file(conn, [
-        "/opt/muos/device/config/board/name",
-        "/opt/muos/config/device.txt",
-        "/proc/device-tree/model",
-        "/etc/device_model",
-    ])
-    if not board_str:
-        # Fallback to uname -m
-        _, uname_m, _ = conn.exec("uname -m")
-        board_str = uname_m.strip() or "aarch64"
+    # 2. Device model: use device chosen in step 1 (device_hint) or probe
+    matched_dev = None
+    if device_hint:
+        matched_dev = device_hint
+    else:
+        board_str = _read_probe_file(conn, [
+            "/Internal/config/device.txt",
+            "/opt/muos/device/config/board/name",
+            "/opt/muos/config/device.txt",
+        ])
+        if board_str:
+            matched_dev = match_device_from_string(board_str)
+        if not matched_dev:
+            matched_dev = next((d for d in DEVICES if d.id == "rg35xxsp"), DEVICES[0])
 
-    matched_dev = match_device_from_string(board_str)
-    if not matched_dev:
-        # Fallback default device (RG35XX SP)
-        matched_dev = next((d for d in DEVICES if d.id == "rg35xxsp"), DEVICES[0])
+    # 3. Mounts & Storage Layout
+    if is_muos_sftp:
+        dual_sd = "Secondary Storage" in root_entries or conn.isdir("/Secondary Storage")
+        system_root = "/Primary Storage"
+        games_root = "/Secondary Storage" if dual_sd else "/Primary Storage"
 
-    # 3. Mounts & Storage Layout (muOS dual-SD or single-SD)
-    # Check if SD2 is mounted at /mnt/sdcard
-    dual_sd = conn.isdir("/mnt/sdcard")
-    system_root = "/mnt/mmc"
-    games_root = "/mnt/sdcard" if dual_sd else "/mnt/mmc"
+        ports_dir = f"{games_root}/ports"
+        scripts_dir = f"{games_root}/ROMS/Ports"
+        libs_dir = f"{system_root}/MUOS/PortMaster/libs"
+        media_dir = "/Catalogue/External - Ports/box"
 
-    ports_dir = f"{games_root}/ports"
-    scripts_dir = f"{games_root}/ROMS/Ports"
-    libs_dir = f"{system_root}/MUOS/PortMaster/libs"
-    media_dir = f"{system_root}/MUOS/info/catalogue/External - Ports/box"
+        pm_ver = _read_probe_file(conn, [
+            f"{system_root}/MUOS/PortMaster/version",
+            f"{games_root}/MUOS/PortMaster/version",
+        ])
+    else:
+        dual_sd = conn.isdir("/mnt/sdcard")
+        system_root = "/mnt/mmc"
+        games_root = "/mnt/sdcard" if dual_sd else "/mnt/mmc"
 
-    pm_ver = _read_probe_file(conn, [
-        f"{system_root}/MUOS/PortMaster/version",
-        f"{games_root}/MUOS/PortMaster/version",
-    ])
+        ports_dir = f"{games_root}/ports"
+        scripts_dir = f"{games_root}/ROMS/Ports"
+        libs_dir = f"{system_root}/MUOS/PortMaster/libs"
+        media_dir = f"{system_root}/MUOS/info/catalogue/External - Ports/box"
+
+        pm_ver = _read_probe_file(conn, [
+            f"{system_root}/MUOS/PortMaster/version",
+            f"{games_root}/MUOS/PortMaster/version",
+        ])
 
     df_ports = conn.df_mount(games_root)
     df_libs = conn.df_mount(system_root)
@@ -658,10 +839,13 @@ def probe_remote(conn: WirelessConnection) -> RemoteProbe:
         free_libs_bytes=df_libs[0] if df_libs else 0,
     )
 
-    # Validate that layout paths are never /tmp or rootfs
+    # Validate that layout paths are never forbidden system paths
     for p in (layout.ports_dir, layout.scripts_dir, layout.libs_dir):
-        if not p or p.startswith("/tmp") or p.startswith("/root") or p == "/":
+        if not p or p == "/":
             raise ValueError(f"Dangerous/invalid remote target path: {p}")
+        for forbidden in FORBIDDEN_SFTP_PREFIXES:
+            if p == forbidden or p.startswith(forbidden + "/"):
+                raise ValueError(f"Dangerous/invalid remote target path under restricted system path {forbidden}: {p}")
 
     warn_msg = None
     if conn.is_default_password:
@@ -719,13 +903,14 @@ def discover_handheld_hosts(timeout: float = 1.0) -> list[tuple[str, str, str]]:
 
 def connect_with_credentials_or_defaults(
     host: str,
-    port: int = 22,
+    port: int = DEFAULT_WIRELESS_PORT,
     username: str | None = None,
     password: str | None = None,
     cfw_hint: str | None = None,
     timeout: float = 8.0,
+    retrust: bool = False,
 ) -> WirelessConnection:
-    """Connect to handheld SSH. If credentials are not provided, tries saved credentials or muOS defaults."""
+    """Connect to handheld SFTP. If credentials are not provided, tries saved credentials or muOS defaults."""
     conn = WirelessConnection()
 
     # 1. Try saved credentials if available and none provided explicitly
@@ -734,21 +919,27 @@ def connect_with_credentials_or_defaults(
         if saved:
             u, p = saved
             try:
-                conn.connect(host, port=port, username=u, password=p, timeout=timeout)
+                conn.connect(host, port=port, username=u, password=p, timeout=timeout, retrust=retrust)
                 conn.is_default_password = False
                 return conn
             except Exception:
-                pass
+                conn.close()
 
     # 2. If explicit credentials provided, try them
     if username is not None and password is not None:
-        conn.connect(host, port=port, username=username, password=password, timeout=timeout)
-        conn.is_default_password = False
-        return conn
+        try:
+            conn.connect(host, port=port, username=username, password=password, timeout=timeout, retrust=retrust)
+            conn.is_default_password = False
+            return conn
+        except Exception:
+            conn.close()
+            raise
 
-    # 3. Try muOS default credentials once
+    # 3. Try muOS default credentials (muos:muos on 2022, root:root on 22)
     creds_to_try: list[tuple[str, str, int]] = []
-    if "muos" in CFW_DEFAULT_CREDENTIALS:
+    if cfw_hint and cfw_hint in CFW_DEFAULT_CREDENTIALS:
+        creds_to_try.extend(CFW_DEFAULT_CREDENTIALS[cfw_hint])
+    elif "muos" in CFW_DEFAULT_CREDENTIALS:
         creds_to_try.extend(CFW_DEFAULT_CREDENTIALS["muos"])
     for item in GENERIC_DEFAULT_CREDENTIALS:
         if item not in creds_to_try:
@@ -756,12 +947,13 @@ def connect_with_credentials_or_defaults(
 
     last_err: Exception | None = None
     for u, p, p_port in creds_to_try:
-        use_port = port if port != 22 else p_port
+        use_port = port if port != DEFAULT_WIRELESS_PORT else p_port
         try:
-            conn.connect(host, port=use_port, username=u, password=p, timeout=timeout)
+            conn.connect(host, port=use_port, username=u, password=p, timeout=timeout, retrust=retrust)
             conn.is_default_password = True
             return conn
-        except (paramiko.AuthenticationException, paramiko.SSHException, socket.error) as e:
+        except Exception as e:
+            conn.close()
             last_err = e
             continue
 
@@ -810,9 +1002,13 @@ class WirelessTarget(core.Target):
             return Path(self.probe.layout.media_dir)
         return None
 
+    def pak_installed(self) -> bool:
+        """muOS has PortMaster built-in or verified during wireless probe."""
+        return True
+
 
 # --------------------------------------------------------------------------
-# Wireless Transfer Engine
+# Wireless Transfer Engine (Pure SFTP)
 # --------------------------------------------------------------------------
 
 def transfer_port_wireless(
@@ -830,7 +1026,8 @@ def transfer_port_wireless(
     """Transfer a single port to the handheld over SFTP atomically.
 
     Stages files locally on PC first, then uploads files via .part atomic put.
-    Skips runtimes already present on device (MD5 verified).
+    Skips runtimes already present on device (verified via size or SFTP MD5).
+    Pure SFTP: never executes shell commands.
     """
     if cancel and cancel():
         raise InterruptedError("cancelled")
@@ -860,7 +1057,7 @@ def transfer_port_wireless(
             log(_tr("log.needs_game_files", "  ⚠ This game requires additional game files: {inst}",
                     inst=port.inst or "see port page on portmaster.games"))
 
-        # Clean remote port directories if requested
+        # Clean remote port directories if requested (pure SFTP removal)
         if clean:
             for d in port.dirs:
                 if not d or not isinstance(d, str) or not d.strip():
@@ -870,17 +1067,16 @@ def transfer_port_wireless(
                 if d_name.startswith("/") or d_name.startswith("\\") or ".." in d_name or "/" in d_name or "\\" in d_name:
                     log(f"  ⚠ Skipping unsafe port directory name: {d!r}")
                     continue
-                # Build path with posixpath and check it starts with ports_dir + '/'
                 remote_d = posixpath.normpath(posixpath.join(layout.ports_dir, d_name))
                 expected_prefix = layout.ports_dir.rstrip("/") + "/"
                 if not remote_d.startswith(expected_prefix):
                     log(f"  ⚠ Skipping unsafe port directory outside ports: {remote_d!r}")
                     continue
-                # Prefer SFTP removal over shell command
                 try:
+                    validate_sftp_write_path(remote_d, layout)
                     conn.rmtree(remote_d)
-                except Exception:
-                    conn.exec(f"rm -rf {shlex.quote(remote_d)}", timeout=5.0)
+                except Exception as e:
+                    log(f"  ⚠ Skipped removing remote directory {remote_d}: {e}")
 
         # 3. SFTP Upload Port directories
         log("  ⇢ Uploading port files over SFTP…")
@@ -895,15 +1091,18 @@ def transfer_port_wireless(
                 for f in files:
                     local_f = Path(root_p) / f
                     if f in port.scripts or f.endswith(".sh"):
-                        # Launch script: destination is scripts_dir
                         remote_sh = f"{layout.scripts_dir}/{f}"
+                        validate_sftp_write_path(remote_sh, layout)
                         conn.put_file_atomic(local_f, remote_sh, progress=progress, cancel=cancel)
                         uploaded_scripts.append(remote_sh)
-                        # Also put in ports_dir if not muOS/builtin_pm
                         if not MUOS.builtin_pm or layout.ports_dir != layout.scripts_dir:
-                            conn.put_file_atomic(local_f, f"{layout.ports_dir}/{f}", progress=progress, cancel=cancel)
+                            remote_p_sh = f"{layout.ports_dir}/{f}"
+                            validate_sftp_write_path(remote_p_sh, layout)
+                            conn.put_file_atomic(local_f, remote_p_sh, progress=progress, cancel=cancel)
                     else:
-                        conn.put_file_atomic(local_f, f"{layout.ports_dir}/{f}", progress=progress, cancel=cancel)
+                        remote_dest = f"{layout.ports_dir}/{f}"
+                        validate_sftp_write_path(remote_dest, layout)
+                        conn.put_file_atomic(local_f, remote_dest, progress=progress, cancel=cancel)
             else:
                 for f in files:
                     if cancel and cancel():
@@ -911,9 +1110,10 @@ def transfer_port_wireless(
                     local_f = Path(root_p) / f
                     rel_f = os.path.join(rel, f).replace("\\", "/")
                     remote_f = f"{layout.ports_dir}/{rel_f}"
+                    validate_sftp_write_path(remote_f, layout)
                     conn.put_file_atomic(local_f, remote_f, progress=progress, cancel=cancel)
 
-        # 4. Handle Runtimes (Skip if already present and MD5 matches)
+        # 4. Handle Runtimes (Skip if already present and size/MD5 matches)
         for r in port.runtime:
             if cancel and cancel():
                 raise InterruptedError("cancelled")
@@ -927,17 +1127,32 @@ def transfer_port_wireless(
 
             runtime_name = Path(url).name
             remote_runtime_path = f"{layout.libs_dir}/{runtime_name}"
+            validate_sftp_write_path(remote_runtime_path, layout)
             expected_md5 = u.get("md5")
+            expected_size = u.get("size")
 
             # Check if runtime already exists on handheld
             if conn.exists(remote_runtime_path):
-                # Verify MD5 if expected_md5 is provided
+                remote_size = None
+                try:
+                    remote_size = conn.stat(remote_runtime_path).st_size
+                except Exception:
+                    pass
+
+                # Match by size if known
+                if expected_size and remote_size is not None and remote_size == expected_size:
+                    log(f"  ✔ Runtime {runtime_name} already present (size match: {remote_size} bytes) — skipped upload")
+                    continue
+
+                # Match by MD5 if cheap streamable
                 if expected_md5:
                     r_md5 = conn.remote_md5(remote_runtime_path)
                     if r_md5 and r_md5 == expected_md5.lower():
                         log(f"  ✔ Runtime {runtime_name} already present (MD5 match) — skipped upload")
                         continue
-                else:
+
+                # Fallback: if file exists and no expected metadata or size matches
+                if not expected_md5 and not expected_size and remote_size and remote_size > 0:
                     log(f"  ✔ Runtime {runtime_name} already present — skipped upload")
                     continue
 
@@ -954,12 +1169,12 @@ def transfer_port_wireless(
             if img:
                 script_stem = Path(port.scripts[0]).stem
                 remote_art = f"{layout.media_dir}/{script_stem}.png"
-                # Stage converted png locally
+                validate_sftp_write_path(remote_art, layout)
                 local_png = stage_dir / f"{script_stem}.png"
                 core.copy_box_art(img, local_png)
                 conn.put_file_atomic(local_png, remote_art, cancel=cancel)
 
-        # 6. Set execute permissions on scripts
+        # 6. Set execute permissions on scripts via SFTP chmod
         for sh_path in uploaded_scripts:
             conn.chmod_x(sh_path)
 
@@ -970,8 +1185,7 @@ def transfer_port_wireless(
 
 
 def finalize_wireless_session(conn: WirelessConnection, cfw_id: str, log: Log) -> None:
-    """Run sync on handheld filesystem."""
-    log("  ⇢ Syncing filesystem on handheld…")
+    """Finalize wireless session (no shell exec commands)."""
     conn.sync()
     log(_tr("wireless.reopen_menu_tip", "  💡 Reopen the Ports menu on your handheld to see newly added games."))
     log("  ✔ Finished wireless transfer.")
