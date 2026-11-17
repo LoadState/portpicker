@@ -69,7 +69,7 @@ def clean_steam_auth(tmp_path):
 @pytest.fixture
 def h700_sp_device() -> Device:
     """RG35XX SP handheld (muOS, Anbernic H700)."""
-    return next(d for d in DEVICES if d.id == "rg35xxsp")
+    return next(d for d in DEVICES if d.id == "h700-nosticks")
 
 
 # --------------------------------------------------------------------------
@@ -303,7 +303,8 @@ def test_fake_mode_downloads_mock_files(tmp_path):
 def test_verified_recipes():
     """Verify S2 Must Fix #1: Recipes trimmed to 1-2 ports (untested; needs hardware test)."""
     recipes = steam_downloader.STEAM_DEPOT_RECIPES
-    assert len(recipes) == 2
+    assert len(recipes) == 3
+    assert "stardewvalleymainline" in recipes
     assert "balatro" in recipes
     assert "undertale" in recipes
 
@@ -499,3 +500,12 @@ def test_wireless_transfer_with_steam_download(tmp_path, h700_sp_device):
     assert any("Balatro.exe" in path for path in uploaded_remotes)
     assert any("Balatro.sh" in path for path in uploaded_remotes)
     assert any("Downloading selective game files from Steam" in l for l in logs)
+
+
+def test_stardew_recipe_pins_readme_manifest(tmp_path):
+    # PortMaster stardewvalleymainline README: download_depot 413150 413151 4278718763097142923
+    r = steam_downloader.STEAM_DEPOT_RECIPES["stardewvalleymainline"]
+    assert (r.appid, r.depot, r.manifest) == ("413150", "413151", "4278718763097142923")
+    assert r.dest == "stardewvalleymainline/gamedata" and r.os == "windows"
+    args = steam_downloader.build_depotdownloader_args(r, tmp_path)
+    assert args[args.index("-manifest") + 1] == "4278718763097142923"
