@@ -172,6 +172,14 @@ def clear_depot_downloader_sessions() -> int:
     return cleared
 
 
+def forget_local_login() -> None:
+    """Forget PortPicker's saved account name so the UI asks for a QR login again."""
+    try:
+        STEAM_AUTH_FILE.unlink()
+    except OSError:
+        pass
+
+
 def logout_steam() -> bool:
     """Delete saved Steam credentials and clear DepotDownloader remembered session."""
     deleted_local = False

@@ -530,3 +530,38 @@ def test_qr_parses_when_code_page_mangles_blocks():
     # Thai Windows (cp874) can't show "█": .NET writes "?" instead
     m, lines = _qrcoder_lines("https://s.team/q/1/987654321", dark="??")
     assert steam_auth.qr_ascii_to_modules([l.rstrip() for l in lines]) == [list(map(bool, r)) for r in m]
+
+
+def test_password_prompt_means_login_missing(tmp_path, monkeypatch):
+    # Hardware test 2026-11-17: no stored token -> DepotDownloader asks for a password, then crashes in LogOn
+    monkeypatch.setattr(steam_auth, "STEAM_AUTH_FILE", tmp_path / "steam_auth.dat")
+    steam_auth.save_steam_credentials("someone")
+    cmd = [sys.executable, "-c", "print('Logging \'someone\' into Steam3...'); print('Enter account password for \"someone\": ')"]
+    with pytest.raises(RuntimeError, match="not saved"):
+        steam_downloader.run_depot_downloader_process(cmd)
+    assert not steam_auth.is_steam_authenticated()  # UI asks for a QR login again
+
+
+def test_qr_login_waits_for_token_save(tmp_path, monkeypatch):
+    # DepotDownloader prints "Success!" before saving the token: PortPicker must not kill it on that line
+    monkeypatch.setattr(steam_auth, "STEAM_AUTH_FILE", tmp_path / "steam_auth.dat")
+    marker = tmp_path / "saved.txt"
+    script = (
+        "import time, pathlib\n"
+        "print('Logging in with QR code...', flush=True)\n"
+        "print('Success! Next time you can login with -username tester -remember-password instead of -qr.', flush=True)\n"
+        "time.sleep(0.5)\n"
+        f"pathlib.Path(r'{marker}').write_text('token saved')\n"
+        "print('Done!', flush=True)\n"
+    )
+    fake = tmp_path / "fake_dd.py"
+    fake.write_text(script, encoding="utf-8")
+    monkeypatch.setattr(steam_downloader, "find_depot_downloader", lambda: Path(sys.executable))
+    real_popen = steam_downloader.subprocess.Popen
+    monkeypatch.setattr(steam_downloader.subprocess, "Popen",
+                        lambda cmd, **kw: real_popen([sys.executable, str(fake)], **kw))
+    approved = []
+    steam_downloader.run_depot_downloader_qr_login(on_qr_lines=lambda l: None, on_approved=approved.append,
+                                                   fake_mode=False)
+    assert marker.exists(), "process was killed before it saved the token"
+    assert approved == ["tester"] and steam_auth.is_steam_authenticated()
