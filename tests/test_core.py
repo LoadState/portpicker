@@ -279,7 +279,7 @@ def test_stardew_16_files_go_to_mainline_port(tmp_path):
 def test_v1_device_and_cfw_configuration():
     # v1: Brick Pro, RG35XX SP and the two generic H700 cards (by stick count)
     enabled_devices = [d for d in DEVICES if d.enabled]
-    assert {d.id for d in enabled_devices} == {"brickpro", "rg35xxsp", "h700-nosticks", "h700-sticks"}
+    assert {d.id for d in enabled_devices} == {"brickpro", "h700-nosticks", "h700-1stick", "h700-sticks"}
     from core import check_device_card_match
     gen = next(d for d in DEVICES if d.id == "h700-sticks")
     assert gen.sticks == 2 and check_device_card_match(gen, "RG40XX-H")[0] is True
@@ -287,10 +287,10 @@ def test_v1_device_and_cfw_configuration():
 
     # Other 5 devices remain present but disabled
     disabled_devices = [d for d in DEVICES if not d.enabled]
-    assert {d.id for d in disabled_devices} == {"brick", "smartpro", "rg40xxh", "r36s", "rg353v"}
+    assert {d.id for d in disabled_devices} == {"brick", "smartpro", "r36s", "rg353v"}
 
     # RG35XX SP has rocknix and spruce added; NextUI and CrossMix are not present
-    rg_sp = next(d for d in DEVICES if d.id == "rg35xxsp")
+    rg_sp = next(d for d in DEVICES if d.id == "h700-nosticks")
     assert "rocknix" in rg_sp.cfws
     assert "spruce" in rg_sp.cfws
     assert "nextui" not in rg_sp.cfws
@@ -325,16 +325,16 @@ def test_v1_device_and_cfw_configuration():
     assert any("Brick Pro" in tip for tip in CROSSMIX.after_install)
 
     # Tested pairs: only rg35xxsp + muOS is tested on hardware so far (2026-11-12)
-    assert TESTED_PAIRS == {("rg35xxsp", "muos"), ("brickpro", "muos")}
-    assert is_tested("rg35xxsp", "muos")
+    assert TESTED_PAIRS == {("h700-nosticks", "muos"), ("h700-sticks", "muos"), ("brickpro", "muos")}
+    assert is_tested("h700-nosticks", "muos")
     assert not is_tested("brickpro", "nextui")
     assert is_tested("brickpro", "muos")
     assert not is_tested("brickpro", "knulli")
     assert not is_tested("brickpro", "spruce")
     assert not is_tested("brickpro", "crossmix")
-    assert not is_tested("rg35xxsp", "knulli")
-    assert not is_tested("rg35xxsp", "rocknix")
-    assert not is_tested("rg35xxsp", "spruce")
+    assert not is_tested("h700-nosticks", "knulli")
+    assert not is_tested("h700-nosticks", "rocknix")
+    assert not is_tested("h700-nosticks", "spruce")
 
     # KNULLI after_install contains exFAT tip
     assert any("exFAT" in tip for tip in KNULLI.after_install)

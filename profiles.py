@@ -231,7 +231,8 @@ CFWS = [
 
 # Hardware-verified device + CFW combinations
 TESTED_PAIRS: set[tuple[str, str]] = {
-    ("rg35xxsp", "muos"),  # 2026-11-12 dev test, 2 cards: 6 ports installed and all start
+    ("h700-nosticks", "muos"),  # RG35XX SP, 2026-11-12/17 dev test: 1 and 2 cards, SD and Wi-Fi
+    ("h700-sticks", "muos"),  # RG35XX H, 2026-11-14 dev test: 1 and 2 cards
     ("brickpro", "muos"),  # 2026-11-13 dev test: works
 }
 
@@ -303,41 +304,32 @@ DEVICES = [
         must_have=A133P_MUST, heavy=A133P_HEAVY,
         body="#1f2229", accent="#5ab0ff", aspect=16 / 9, tall=False,
     ),
-    # --- Anbernic H700 ---
+    # --- Anbernic H700: one card per stick count (2026-11-17, Tawaphol) ---
+    # All H700 models share chip, RAM and CFW folder layout, so installs work the same; the stick count
+    # decides which ports are recommended. Screen size is not used to filter.
     Device(
-        id="rg35xxsp", name="Anbernic RG35XX SP", chip="Allwinner H700", ram="1 GB",
-        screen='3.5" 640×480', enabled=True, sticks=0,
+        id="h700-nosticks", name="Anbernic H700 (no sticks)", chip="Allwinner H700", ram="1 GB",
+        screen="640×480 · RG35XX SP / Plus / 2024, RG28XX, RG34XX …", enabled=True, sticks=0,
         tags={"lowpower"}, unsupported_reqs=LOW_RAM,
         cfws=["muos", "knulli", "rocknix", "spruce"],
         must_have=A133P_MUST, heavy=A133P_HEAVY,
-        body="#7b8794", accent="#e11d48", clam=True,
+        body="#7b8794", accent="#e11d48",
     ),
-    # Any other Allwinner H700 handheld (RG35XX Plus/H/2024, RG34XX, RG28XX, RG40XX H/V, RG CubeXX ...).
-    # Same chip, RAM and CFW folder layout as the SP, so installs work; pick by stick count so the
-    # recommendations fit. Results in the beta sheet tell us which models to add as their own cards.
     Device(
-        id="h700-nosticks", name="Other H700 (no sticks)", chip="Allwinner H700", ram="1 GB",
-        screen="RG35XX Plus / 2024, RG34XX, RG28XX …", enabled=True, sticks=0,
+        id="h700-1stick", name="Anbernic H700 (1 stick)", chip="Allwinner H700", ram="1 GB",
+        screen="640×480 · RG40XX V …", enabled=True, sticks=1,
         tags={"lowpower"}, unsupported_reqs=LOW_RAM,
         cfws=["muos", "knulli", "rocknix"],
         must_have=A133P_MUST, heavy=A133P_HEAVY,
         body="#4b5160", accent="#fbbf24",
     ),
     Device(
-        id="h700-sticks", name="Other H700 (with sticks)", chip="Allwinner H700", ram="1 GB",
-        screen="RG35XX H, RG40XX H / V, RG CubeXX …", enabled=True, sticks=2,
+        id="h700-sticks", name="Anbernic H700 (2 sticks)", chip="Allwinner H700", ram="1 GB",
+        screen="640×480 · RG35XX H, RG40XX H …", enabled=True, sticks=2,
         tags={"lowpower"}, unsupported_reqs=LOW_RAM,
         cfws=["muos", "knulli", "rocknix"],
         must_have=A133P_MUST, heavy=A133P_HEAVY,
         body="#2f3440", accent="#38bdf8", tall=False,
-    ),
-    Device(
-        id="rg40xxh", name="Anbernic RG40XX H", chip="Allwinner H700", ram="1 GB",
-        screen='4" 640×480', enabled=False, sticks=2,
-        tags={"lowpower"}, unsupported_reqs=LOW_RAM,
-        cfws=["muos", "knulli"],
-        must_have=A133P_MUST, heavy=A133P_HEAVY,
-        body="#3b3f4a", accent="#a3e635", aspect=4 / 3, tall=False,
     ),
     # --- Rockchip ---
     Device(

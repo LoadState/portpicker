@@ -18,7 +18,7 @@ from profiles import (DEVICES, NEXTUI, MUOS, KNULLI, ROCKNIX, ARKOS,
                       SPRUCE, CROSSMIX, CFW, Device)
 
 BRICK = next(d for d in DEVICES if d.id == "brickpro")
-RG35XXSP = next(d for d in DEVICES if d.id == "rg35xxsp")
+RG35XXSP = next(d for d in DEVICES if d.id == "h700-nosticks")
 
 
 def make_port(stem, **kw):
