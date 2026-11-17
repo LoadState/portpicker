@@ -22,6 +22,8 @@ from PySide6.QtWidgets import (QAbstractItemView, QApplication, QDialog, QCheckB
 import core
 from core import human
 import steam
+import steam_auth
+import steam_downloader
 import wireless
 from i18n import t
 from profiles import CFWS, DEVICES, CFW, Device, is_tested, MUOS
@@ -1419,6 +1421,11 @@ class PortsPage(QWidget):
             self.d_local.setText(f"🎮 Steam: {p.steam.app.path}\nWill copy needed game files to {p.steam.recipe.dest}")
         elif p.steam:
             self.d_local.setText("🎮 " + p.steam.note)
+        elif getattr(p, "steam_download_ready", False) and p.steam_depot:
+            if steam_auth.is_steam_authenticated():
+                self.d_local.setText(f"🎮 Steam: Ready to download needed files ({p.steam_depot.os} depot)")
+            else:
+                self.d_local.setText("🎮 Steam: Login via Steam QR (top bar) to download needed files")
         elif p.rtr:
             self.d_local.setText("No extra files needed ✔")
         else:
@@ -2153,6 +2160,155 @@ class WirelessConnectDialog(QDialog):
         super().reject()
 
 
+class SteamQRWorker(QThread):
+    qr_pixmap_ready = Signal(object)
+    status_changed = Signal(dict)
+
+    def __init__(self):
+        super().__init__()
+        self.cancelled = False
+
+    def run(self):
+        try:
+            exe = steam_downloader.find_depot_downloader()
+            fake_mode = bool(os.environ.get("PORTPICKER_FAKE_DEPOT_DOWNLOADER"))
+
+            if not exe and not fake_mode:
+                self.status_changed.emit({
+                    "status": "error",
+                    "error": "DepotDownloader is not installed.",
+                })
+                return
+
+            def on_qr(lines: list[str]):
+                pix = steam_auth.qr_ascii_to_pixmap(lines, target_size=240)
+                if pix and not pix.isNull():
+                    self.qr_pixmap_ready.emit(pix)
+
+            def on_approved(account: str):
+                self.status_changed.emit({
+                    "status": "approved",
+                    "account_name": account,
+                })
+
+            steam_downloader.run_depot_downloader_qr_login(
+                on_qr_lines=on_qr,
+                on_approved=on_approved,
+                cancel=lambda: self.cancelled,
+                fake_mode=fake_mode,
+            )
+        except Exception as e:
+            self.status_changed.emit({"status": "error", "error": str(e)})
+
+
+class SteamLoginDialog(QDialog):
+    """Dialog displaying a Steam QR code for authentication via Steam Mobile App."""
+
+    def __init__(self, parent=None):
+        super().__init__(parent)
+        self.setWindowTitle(t("steam.dialog_title", "Steam QR Login"))
+        self.setMinimumWidth(460)
+        self._worker: SteamQRWorker | None = None
+        self.session_success = False
+
+        layout = QVBoxLayout(self)
+        layout.setContentsMargins(28, 24, 28, 24)
+        layout.setSpacing(14)
+
+        t_lbl = QLabel(t("steam.dialog_title", "Steam QR Login"))
+        t_lbl.setStyleSheet("font-size:18px;font-weight:700;color:#ffb347;")
+        layout.addWidget(t_lbl)
+
+        instr = QLabel(t("steam.instructions", "Open Steam Mobile App → Steam Guard (shield icon) → Scan QR Code → Approve"))
+        instr.setStyleSheet("color:#9aa0b2;")
+        instr.setWordWrap(True)
+        layout.addWidget(instr)
+
+        # Container for QR display
+        self.qr_box = QFrame()
+        self.qr_box.setStyleSheet("background:#ffffff;border-radius:12px;padding:12px;")
+        qr_layout = QVBoxLayout(self.qr_box)
+        qr_layout.setAlignment(Qt.AlignCenter)
+
+        self.qr_lbl = QLabel()
+        self.qr_lbl.setAlignment(Qt.AlignCenter)
+        self.qr_lbl.setMinimumSize(240, 240)
+        self.qr_lbl.setText("Generating QR Code…")
+        self.qr_lbl.setStyleSheet("color:#4a5568;font-style:italic;")
+        qr_layout.addWidget(self.qr_lbl)
+        layout.addWidget(self.qr_box)
+
+        # Status text
+        self.status_lbl = QLabel(t("steam.waiting_approval", "Waiting for mobile approval…"))
+        self.status_lbl.setAlignment(Qt.AlignCenter)
+        self.status_lbl.setWordWrap(True)
+        self.status_lbl.setStyleSheet("font-weight:600;color:#e7e9ef;")
+        layout.addWidget(self.status_lbl)
+
+        # Buttons row
+        btn_row = QHBoxLayout()
+        self.btn_refresh = QPushButton("🔄 Refresh QR")
+        self.btn_refresh.clicked.connect(self._start_session)
+        self.btn_refresh.hide()
+        btn_row.addWidget(self.btn_refresh)
+
+        btn_row.addStretch()
+
+        self.btn_close = QPushButton(t("steam.close", "Close"))
+        self.btn_close.clicked.connect(self.close)
+        btn_row.addWidget(self.btn_close)
+        layout.addLayout(btn_row)
+
+        self._start_session()
+
+    def _start_session(self):
+        self.btn_refresh.hide()
+        self.qr_lbl.setPixmap(QPixmap())
+        self.qr_lbl.setText("Generating QR Code…")
+        self.qr_lbl.setStyleSheet("color:#4a5568;font-style:italic;")
+        self.status_lbl.setText(t("steam.waiting_approval", "Waiting for mobile approval…"))
+        self.status_lbl.setStyleSheet("font-weight:600;color:#e7e9ef;")
+
+        if self._worker and self._worker.isRunning():
+            self._worker.cancelled = True
+            self._worker.wait(500)
+
+        self._worker = SteamQRWorker()
+        self._worker.qr_pixmap_ready.connect(self._on_qr_pixmap)
+        self._worker.status_changed.connect(self._on_status_changed)
+        self._worker.start()
+
+    def _on_qr_pixmap(self, pixmap: object):
+        if pixmap and isinstance(pixmap, QPixmap):
+            self.qr_lbl.setText("")
+            self.qr_lbl.setPixmap(pixmap)
+
+    def _on_status_changed(self, res: dict):
+        status = res.get("status")
+        if status == "approved":
+            name = res.get("account_name", "User")
+            self.status_lbl.setText(t("steam.approved", "✅ Successfully logged in as {name}!", name=name))
+            self.status_lbl.setStyleSheet("font-weight:700;color:#6ee7a8;")
+            self.session_success = True
+            self.btn_close.setText("Done")
+            self.accept()
+        elif status == "expired":
+            self.status_lbl.setText(t("steam.expired", "⚠ QR code expired. Please generate a new one."))
+            self.status_lbl.setStyleSheet("color:#fb923c;")
+            self.btn_refresh.show()
+        elif status == "error":
+            err = res.get("error", "Unknown error")
+            self.status_lbl.setText(t("steam.error", "⚠ Login failed: {err}", err=err))
+            self.status_lbl.setStyleSheet("color:#f87171;")
+            self.btn_refresh.show()
+
+    def closeEvent(self, event):
+        if self._worker and self._worker.isRunning():
+            self._worker.cancelled = True
+            self._worker.wait(300)
+        super().closeEvent(event)
+
+
 # ----------------------------------------------------------------------------
 # Main window
 # ----------------------------------------------------------------------------
@@ -2199,6 +2355,11 @@ class Main(QMainWindow):
         self.net = QLabel("")
         self.net.setStyleSheet("color:#9aa0b2;")
         hl.addWidget(self.net)
+        self.steam_btn = QPushButton("")
+        self._update_steam_btn()
+        self.steam_btn.clicked.connect(self._on_steam_btn_clicked)
+        hl.addSpacing(12)
+        hl.addWidget(self.steam_btn)
         if BETA_SHEET_URL:
             hl.addSpacing(12)
             hl.addWidget(beta_button())
@@ -2249,6 +2410,54 @@ class Main(QMainWindow):
 
         self.go(0)
         self._load_catalog()
+
+    def _update_steam_btn(self):
+        creds = steam_auth.get_steam_credentials()
+        if creds:
+            name = creds.get("account_name", "User")
+            self.steam_btn.setText(t("steam.logged_in", "🎮 Steam: {name}", name=name))
+            self.steam_btn.setToolTip(f"Logged in as {name}. Click to log out.")
+        else:
+            self.steam_btn.setText(t("steam.login_btn", "🎮 Steam Login (QR)"))
+            self.steam_btn.setToolTip("Scan QR code with the Steam mobile app to download game files.")
+
+    def _on_steam_btn_clicked(self):
+        creds = steam_auth.get_steam_credentials()
+        if creds:
+            name = creds.get("account_name", "User")
+            reply = QMessageBox.question(
+                self,
+                "Steam",
+                f"Currently logged in as {name}.\n\n"
+                "Do you want to log out?\n\n"
+                "Note: This will clear saved DepotDownloader sessions in IsolatedStorage, "
+                "which will also log out any standalone DepotDownloader instances.",
+                QMessageBox.Yes | QMessageBox.No,
+            )
+            if reply == QMessageBox.Yes:
+                steam_auth.logout_steam()
+                self._update_steam_btn()
+                if self.catalog:
+                    self._prepare_ports(keep_selection=list(self.p_ports.model.selected))
+        else:
+            exe = steam_downloader.find_depot_downloader()
+            if not exe and not os.environ.get("PORTPICKER_FAKE_DEPOT_DOWNLOADER"):
+                # Ask to download official SteamRE DepotDownloader
+                def confirm_cb(msg: str) -> bool:
+                    res = QMessageBox.question(self, "DepotDownloader", msg, QMessageBox.Yes | QMessageBox.No)
+                    return res == QMessageBox.Yes
+
+                try:
+                    steam_downloader.ensure_depot_downloader(confirm_callback=confirm_cb)
+                except Exception as e:
+                    QMessageBox.warning(self, "DepotDownloader", str(e))
+                    return
+
+            dlg = SteamLoginDialog(self)
+            if dlg.exec():
+                self._update_steam_btn()
+                if self.catalog:
+                    self._prepare_ports(keep_selection=list(self.p_ports.model.selected))
 
     # --- navigation
     def go(self, i):

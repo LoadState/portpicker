@@ -21,6 +21,8 @@ from typing import Callable, Iterable
 
 from i18n import t as _tr
 import steam
+import steam_auth
+import steam_downloader
 from profiles import CFW, DEVICES, MUOS, TESTED_BROKEN, Device
 
 PORTS_JSON_URL = "https://github.com/PortsMaster/PortMaster-New/releases/latest/download/ports.json"
@@ -231,6 +233,7 @@ class Port:
     local_script: Path | None = None
     local_note: str = ""
     steam: "steam.Match | None" = None   # set by attach_steam()
+    steam_depot: "steam_downloader.SteamDepotRecipe | None" = None  # set by attach_steam()
     beta: list[dict] = field(default_factory=list)  # beta sheet rows for the chosen device + CFW
 
     @property
@@ -254,9 +257,13 @@ class Port:
         return bool(self.steam and self.steam.usable)
 
     @property
+    def steam_download_ready(self) -> bool:
+        return bool(self.steam_depot is not None)
+
+    @property
     def has_files(self) -> bool:
-        """Game files will be supplied (local folder or Steam)."""
-        return bool(self.local_dir or self.steam_ready)
+        """Game files will be supplied (local folder, local Steam, or Steam QR download)."""
+        return bool(self.local_dir or self.steam_ready or (self.steam_download_ready and steam_auth.is_steam_authenticated()))
 
     @property
     def is_paid(self) -> bool:
@@ -431,22 +438,29 @@ def sort_key(p: Port):
     return (TIER_ORDER.get(p.tier, 9), have, ready, p.title.lower())
 
 def attach_steam(ports: Iterable[Port], apps: dict) -> int:
-    """Mark ports whose game is installed in Steam. Run after classify(),
-    which resets reasons. Returns how many can be filled from Steam."""
+    """Mark ports whose game is installed in Steam or available via Steam QR download.
+    Run after classify(), which resets reasons. Returns how many can be filled from Steam."""
     n = 0
+    auth = steam_auth.is_steam_authenticated()
     for p in ports:
         p.steam = None
+        p.steam_depot = steam_downloader.STEAM_DEPOT_RECIPES.get(p.stem)
         if p.local_only or p.rtr or p.tier == "incompatible":
             continue
         m = steam.match(p.stem, apps)
-        if not m:
-            continue
-        p.steam = m
-        if m.usable and p.local_dir:
-            p.reasons.append(_tr("reason.also_steam", "🎮 Available on Steam (will use files from selected local folder)"))
-        else:
-            p.reasons.append(m.note)
-        n += m.usable
+        if m:
+            p.steam = m
+            if m.usable and p.local_dir:
+                p.reasons.append(_tr("reason.also_steam", "🎮 Available on Steam (will use files from selected local folder)"))
+            else:
+                p.reasons.append(m.note)
+            n += m.usable
+        elif p.steam_depot:
+            if auth:
+                p.reasons.append(_tr("reason.steam_download_ready", "🎮 Available to download from Steam (QR Login active)"))
+                n += 1
+            else:
+                p.reasons.append(_tr("reason.steam_download_available", "🎮 Steam download available (Login with Steam QR code)"))
     return n
 
 # --------------------------------------------------------------------------
@@ -1660,6 +1674,16 @@ def install_port(p: Port, t: Target, dev: Device, utils: dict, log: Log,
         c, s = copy_from_steam(p, t, overwrite_local, log, cancel)
         log(_tr("log.copied_steam", "  ✔ Copied {count} files from Steam (skipped existing {skipped})",
               count=c, skipped=s))
+    elif p.steam_download_ready:
+        recipe = p.steam_depot
+        stage_dir = DL_DIR / f"_steam_dl_{p.stem}"
+        if stage_dir.exists():
+            shutil.rmtree(stage_dir, ignore_errors=True)
+        log(_tr("log.download_steam", "  🎮 Downloading selective game files from Steam for {title}…", title=p.title))
+        steam_downloader.download_steam_files(recipe, stage_dir, log=log, progress=progress, cancel=cancel)
+        dst = t.ports_dir / recipe.dest
+        c, s = merge_tree(stage_dir, dst, overwrite_local, log, cancel)
+        log(_tr("log.copied_steam_download", "  ✔ Placed {count} Steam files into {dest}", count=c, dest=recipe.dest))
     elif p.needs_files:
         log(_tr("log.needs_game_files", "  ⚠ This game requires additional game files: {inst}",
               inst=p.inst or "see port page on portmaster.games"))
