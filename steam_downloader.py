@@ -14,6 +14,7 @@ Meets T-023 card requirements:
 from __future__ import annotations
 
 import hashlib
+import json
 import os
 import queue
 import re
@@ -397,7 +398,9 @@ def run_depot_downloader_process(
         keys = ("Exception", "Error", "error", "Failed", "failed", "denied", "rejected", "not ", "No ")
         important = [l for l in captured_lines if any(k in l for k in keys) and not l.startswith("at ")]
         err_snippet = "\n".join((important[-4:] or captured_lines[-5:])) if captured_lines else "Unknown error"
-        raise RuntimeError(f"DepotDownloader failed with exit code {ret}:\n{err_snippet}")
+        exc = RuntimeError(f"DepotDownloader failed with exit code {ret}:\n{err_snippet}")
+        exc.captured_lines = captured_lines
+        raise exc
 
     return captured_lines
 
@@ -719,3 +722,193 @@ def download_steam_files(
                 temp_fl.unlink()
             except OSError:
                 pass
+
+
+# --------------------------------------------------------------------------
+# Steam Ownership Check via DepotDownloader (-manifest-only)
+# --------------------------------------------------------------------------
+
+STEAM_OWNED_CACHE_TTL_S = 7 * 86400  # 7 days
+
+
+def get_steam_owned_cache_path() -> Path:
+    """Return path to steam_owned.json within the active APP_DIR."""
+    return steam_auth.APP_DIR / "steam_owned.json"
+
+
+def load_steam_owned_cache() -> dict[str, dict[str, dict]]:
+    """Load cached ownership dictionary from APP_DIR/steam_owned.json.
+
+    Schema: {account: {appid: {"owned": bool, "checked": ts}}}
+    """
+    path = get_steam_owned_cache_path()
+    if not path.is_file():
+        return {}
+    try:
+        with open(path, "r", encoding="utf-8") as f:
+            data = json.load(f)
+            if isinstance(data, dict):
+                return data
+    except Exception:
+        pass
+    return {}
+
+
+def save_steam_owned_cache(cache: dict) -> None:
+    """Save cached ownership dictionary to APP_DIR/steam_owned.json."""
+    path = get_steam_owned_cache_path()
+    path.parent.mkdir(parents=True, exist_ok=True)
+    tmp = path.with_suffix(".tmp")
+    try:
+        with open(tmp, "w", encoding="utf-8") as f:
+            json.dump(cache, f, indent=2)
+        tmp.replace(path)
+    except Exception:
+        try:
+            if tmp.exists():
+                tmp.unlink()
+        except OSError:
+            pass
+
+
+def get_cached_ownership(
+    account: str,
+    appid: str,
+    max_age_s: float = STEAM_OWNED_CACHE_TTL_S,
+) -> bool | None:
+    """Return cached ownership (True/False) for account and appid if checked within max_age_s, else None."""
+    if not account or not appid:
+        return None
+    cache = load_steam_owned_cache()
+    acct_cache = cache.get(account)
+    if not isinstance(acct_cache, dict):
+        return None
+    entry = acct_cache.get(str(appid))
+    if not isinstance(entry, dict) or "owned" not in entry or "checked" not in entry:
+        return None
+    checked_ts = entry.get("checked", 0)
+    if (time.time() - checked_ts) > max_age_s:
+        return None
+    return bool(entry["owned"])
+
+
+def set_cached_ownership(account: str, appid: str, owned: bool) -> None:
+    """Cache ownership check result for account and appid."""
+    if not account or not appid:
+        return
+    cache = load_steam_owned_cache()
+    if account not in cache or not isinstance(cache[account], dict):
+        cache[account] = {}
+    cache[account][str(appid)] = {
+        "owned": bool(owned),
+        "checked": int(time.time()),
+    }
+    save_steam_owned_cache(cache)
+
+
+def check_steam_ownership(
+    appid: str,
+    account_name: str,
+    depot_downloader_exe: Path | None = None,
+    log: Log | None = None,
+    cancel: Callable[[], bool] | None = None,
+) -> bool:
+    """Check if account_name owns appid using DepotDownloader 3.4.0.
+
+    Runs DepotDownloader with:
+      -app <id> -manifest-only -username <acct> -remember-password -dir <tmp>
+
+    Ownership determination (cited from DepotDownloader 3.4.0 source):
+      - ContentDownloader.cs:438:
+          throw new ContentDownloaderException(string.Format("App {0} ({1}) is not available from this account.", appId, contentName));
+      - ContentDownloader.cs:565:
+          Console.WriteLine("Depot {0} is not available from this account.", depotId);
+      Owned:
+          Downloads manifest and exits 0.
+
+    Reuses run_depot_downloader_process (stdin DEVNULL, CREATE_NO_WINDOW, watchdog, login-missing handling from PR #13).
+    Always cleans up the temporary directory after each check.
+    Raises RuntimeError(STEAM_LOGIN_MISSING) if credentials/session are missing or expired.
+    Raises InterruptedError if cancelled.
+    """
+    exe = depot_downloader_exe or find_depot_downloader()
+    if not exe:
+        raise FileNotFoundError("DepotDownloader executable not found")
+
+    tmp_dir = Path(tempfile.mkdtemp(prefix=f"pp-steam-check-{appid}-"))
+    cmd = [
+        str(exe),
+        "-app",
+        str(appid),
+        "-manifest-only",
+        "-username",
+        account_name,
+        "-remember-password",
+        "-dir",
+        str(tmp_dir),
+    ]
+
+    try:
+        captured_lines: list[str] = []
+        is_not_owned = False
+        try:
+            if log:
+                log(f"  🔍 Checking Steam ownership for App {appid}…")
+            captured_lines = run_depot_downloader_process(
+                cmd,
+                log=log,
+                cancel=cancel,
+                inactivity_timeout=60.0,
+            )
+        except RuntimeError as exc:
+            err_str = str(exc)
+            if STEAM_LOGIN_MISSING in err_str:
+                raise
+            lines = getattr(exc, "captured_lines", []) or [err_str]
+            if any("is not available from this account" in l for l in lines) or "is not available from this account" in err_str:
+                is_not_owned = True
+            else:
+                raise
+
+        if any("is not available from this account" in l for l in captured_lines):
+            is_not_owned = True
+
+        return not is_not_owned
+    finally:
+        shutil.rmtree(tmp_dir, ignore_errors=True)
+
+
+def check_steam_ownership_batch(
+    appids: list[str],
+    account_name: str,
+    recheck: bool = False,
+    depot_downloader_exe: Path | None = None,
+    log: Log | None = None,
+    progress: Callable[[int, int, str], None] | None = None,
+    cancel: Callable[[], bool] | None = None,
+) -> dict[str, bool]:
+    """Check ownership for a batch of appids, utilizing 7-day cache unless recheck is True."""
+    results: dict[str, bool] = {}
+    tot = len(appids)
+    for idx, appid in enumerate(appids):
+        if cancel and cancel():
+            raise InterruptedError("cancelled")
+        if not recheck:
+            cached = get_cached_ownership(account_name, appid)
+            if cached is not None:
+                results[appid] = cached
+                if progress:
+                    progress(idx + 1, tot, appid)
+                continue
+        owned = check_steam_ownership(
+            appid=appid,
+            account_name=account_name,
+            depot_downloader_exe=depot_downloader_exe,
+            log=log,
+            cancel=cancel,
+        )
+        set_cached_ownership(account_name, appid, owned)
+        results[appid] = owned
+        if progress:
+            progress(idx + 1, tot, appid)
+    return results

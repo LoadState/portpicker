@@ -1075,6 +1075,62 @@ STRINGS: dict[str, dict[str, str]] = {
         "en": "  ✔ Placed {count} Steam files into {dest}",
         "th": "  ✔ ติดตั้งไฟล์ Steam จำนวน {count} ไฟล์ลงใน {dest}",
     },
+    "ports.filter_steam": {
+        "en": "🎮 Steam",
+        "th": "🎮 Steam",
+    },
+    "ports.filter_owned_only": {
+        "en": "Owned only",
+        "th": "เฉพาะที่มีในไอดี",
+    },
+    "ports.btn_check_steam": {
+        "en": "Check my Steam games",
+        "th": "ตรวจสอบเกม Steam",
+    },
+    "ports.chk_recheck": {
+        "en": "Re-check",
+        "th": "ตรวจใหม่",
+    },
+    "ports.tooltip_recheck": {
+        "en": "Ignore 7-day cache and query Steam again",
+        "th": "ไม่ใช้แคช 7 วัน ตรวจสอบกับ Steam ใหม่",
+    },
+    "steam.owned": {
+        "en": "✅ Owned",
+        "th": "✅ เป็นเจ้าของแล้ว",
+    },
+    "steam.not_owned": {
+        "en": "❌ Not owned",
+        "th": "❌ ยังไม่ได้เป็นเจ้าของ",
+    },
+    "steam.not_checked": {
+        "en": "? Not checked",
+        "th": "? ยังไม่ได้ตรวจสอบ",
+    },
+    "steam.checking_ownership": {
+        "en": "Checking Steam ownership…",
+        "th": "กำลังตรวจสอบความเป็นเจ้าของ Steam…",
+    },
+    "steam.check_title": {
+        "en": "Steam Ownership Check",
+        "th": "ตรวจสอบความเป็นเจ้าของ Steam",
+    },
+    "steam.all_cached": {
+        "en": "All visible Steam games were verified from 7-day cache.",
+        "th": "เกม Steam ทั้งหมดได้รับการยืนยันจากแคช 7 วันแล้ว",
+    },
+    "steam.no_visible_games": {
+        "en": "No Steam games currently visible in the list.",
+        "th": "ไม่มีเกม Steam ที่แสดงอยู่ในรายการขณะนี้",
+    },
+    "reason.steam_owned": {
+        "en": "🎮 Owned on Steam",
+        "th": "🎮 มีเกมนี้ในคลัง Steam",
+    },
+    "reason.steam_not_owned": {
+        "en": "🎮 Not owned on Steam",
+        "th": "🎮 ยังไม่มีเกมนี้ในคลัง Steam",
+    },
 }
 
 

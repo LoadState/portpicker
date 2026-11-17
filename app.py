@@ -15,7 +15,7 @@ from PySide6.QtGui import (QBrush, QColor, QFont, QIcon, QLinearGradient, QPaint
                            QPen, QPixmap)
 from PySide6.QtWidgets import (QAbstractItemView, QApplication, QDialog, QCheckBox, QComboBox, QFileDialog,
                                QFrame, QGridLayout, QHBoxLayout, QHeaderView, QLabel, QLineEdit,
-                               QMainWindow, QMessageBox, QPlainTextEdit, QProgressBar, QPushButton,
+                               QMainWindow, QMessageBox, QPlainTextEdit, QProgressBar, QProgressDialog, QPushButton,
                                QScrollArea, QSizePolicy, QSplitter, QStackedWidget, QTableView,
                                QVBoxLayout, QWidget)
 
@@ -985,6 +985,7 @@ class PortModel(QAbstractTableModel):
         self.rows: list[core.Port] = []
         self.row_of: dict[str, int] = {}
         self.selected: set[str] = set()
+        self.steam_filter_active: bool = False
         images.ready.connect(self._img_ready)
 
     def set_ports(self, ports):
@@ -1031,6 +1032,18 @@ class PortModel(QAbstractTableModel):
             if c == 4:
                 return ", ".join(p.genres[:2])
             if c == 5:
+                if p.steam_appid:
+                    owned = p.steam_owned
+                    if owned is None:
+                        creds = steam_auth.get_steam_credentials()
+                        if creds:
+                            owned = steam_downloader.get_cached_ownership(creds.get("account_name", ""), p.steam_appid)
+                    if owned is True:
+                        return t("steam.owned", "✅ Owned")
+                    elif owned is False:
+                        return t("steam.not_owned", "❌ Not owned")
+                    elif self.steam_filter_active or not p.rtr:
+                        return t("steam.not_checked", "? Not checked")
                 if FREE_ONLY:
                     return t("ports.files_ready", "Ready")
                 if p.local_dir:
@@ -1046,6 +1059,18 @@ class PortModel(QAbstractTableModel):
             if c == 3:
                 return QBrush(QColor(TIER_META[p.tier][1]))
             if c == 5:
+                if p.steam_appid:
+                    owned = p.steam_owned
+                    if owned is None:
+                        creds = steam_auth.get_steam_credentials()
+                        if creds:
+                            owned = steam_downloader.get_cached_ownership(creds.get("account_name", ""), p.steam_appid)
+                    if owned is True:
+                        return QBrush(QColor("#22c55e"))
+                    elif owned is False:
+                        return QBrush(QColor("#ef4444"))
+                    elif self.steam_filter_active or not p.rtr:
+                        return QBrush(QColor("#9aa0b2"))
                 return QBrush(QColor("#7dd3fc" if p.has_files else "#6ee7a8" if p.rtr else "#fb923c"))
         if role == Qt.FontRole and c == 2:
             f = QFont()
@@ -1144,6 +1169,26 @@ class PortsPage(QWidget):
         if FREE_ONLY:
             self.ready_only.setChecked(True)
             self.ready_only.hide()
+
+        self.steam_filter = QCheckBox(t("ports.filter_steam", "🎮 Steam"))
+        self.steam_filter.toggled.connect(self._on_steam_filter_toggled)
+        filt.addWidget(self.steam_filter)
+
+        self.owned_only = QCheckBox(t("ports.filter_owned_only", "Owned only"))
+        self.owned_only.toggled.connect(self.apply_filter)
+        filt.addWidget(self.owned_only)
+
+        self.btn_check_steam = QPushButton(t("ports.btn_check_steam", "Check my Steam games"))
+        self.btn_check_steam.clicked.connect(self._check_steam_games)
+        filt.addWidget(self.btn_check_steam)
+
+        self.chk_recheck = QCheckBox(t("ports.chk_recheck", "Re-check"))
+        self.chk_recheck.setToolTip(t("ports.tooltip_recheck", "Ignore 7-day cache and query Steam again"))
+        filt.addWidget(self.chk_recheck)
+
+        self.owned_only.hide()
+        self.btn_check_steam.hide()
+        self.chk_recheck.hide()
 
         root.addLayout(filt)
 
@@ -1284,18 +1329,164 @@ class PortsPage(QWidget):
                 txt += t("ports.summary_steam_extra", " · 🎮 From Steam {count}", count=st)
         self.summary.setText(txt)
 
+    def update_steam_auth_ui(self):
+        auth = steam_auth.is_steam_authenticated()
+        self.owned_only.setVisible(auth)
+        if not auth:
+            self.owned_only.setChecked(False)
+        self.btn_check_steam.setVisible(auth and self.steam_filter.isChecked())
+        self.chk_recheck.setVisible(auth and self.steam_filter.isChecked())
+
+    def _on_steam_filter_toggled(self, checked: bool):
+        auth = steam_auth.is_steam_authenticated()
+        self.btn_check_steam.setVisible(auth and checked)
+        self.chk_recheck.setVisible(auth and checked)
+        self.apply_filter()
+
+    def _check_steam_games(self):
+        creds = steam_auth.get_steam_credentials()
+        if not creds or not creds.get("account_name"):
+            QMessageBox.information(
+                self,
+                "Steam",
+                t("steam.login_needed", "Please log in with Steam QR first (top bar)."),
+            )
+            return
+
+        account = creds["account_name"]
+        exe = steam_downloader.find_depot_downloader()
+        if not exe and not os.environ.get("PORTPICKER_FAKE_DEPOT_DOWNLOADER"):
+            QMessageBox.warning(
+                self,
+                "Steam",
+                t("steam.depot_downloader_missing", "DepotDownloader is not installed."),
+            )
+            return
+
+        visible_steam = [p for p in self.model.rows if p.steam_appid]
+        if not visible_steam:
+            QMessageBox.information(
+                self,
+                "Steam",
+                t("steam.no_visible_games", "No Steam games currently visible in the list."),
+            )
+            return
+
+        recheck = self.chk_recheck.isChecked()
+        to_check = []
+        for p in visible_steam:
+            cached = steam_downloader.get_cached_ownership(account, p.steam_appid)
+            if cached is not None and not recheck:
+                p.steam_owned = cached
+            else:
+                to_check.append(p)
+
+        self.model.refresh()
+        if self.current:
+            self._show(self.table.currentIndex())
+
+        if not to_check:
+            QMessageBox.information(
+                self,
+                "Steam",
+                t("steam.all_cached", "All visible Steam games were verified from 7-day cache."),
+            )
+            return
+
+        dlg = QProgressDialog(self)
+        dlg.setWindowTitle(t("steam.check_title", "Steam Ownership Check"))
+        dlg.setLabelText(t("steam.checking_ownership", "Checking Steam ownership…"))
+        dlg.setRange(0, len(to_check))
+        dlg.setValue(0)
+        dlg.setCancelButtonText(t("app.cancel", "Cancel"))
+        dlg.setWindowModality(Qt.WindowModal)
+        dlg.setMinimumDuration(0)
+
+        def job(w):
+            for i, p in enumerate(to_check):
+                if w.cancelled:
+                    raise InterruptedError("cancelled")
+                w.log.emit(f"Checking {p.title} (App {p.steam_appid})…")
+                w.progress.emit(i, len(to_check))
+                try:
+                    owned = steam_downloader.check_steam_ownership(
+                        appid=p.steam_appid,
+                        account_name=account,
+                        depot_downloader_exe=exe,
+                        cancel=lambda: w.cancelled,
+                    )
+                    steam_downloader.set_cached_ownership(account, p.steam_appid, owned)
+                    p.steam_owned = owned
+                except RuntimeError as err:
+                    if steam_downloader.STEAM_LOGIN_MISSING in str(err):
+                        raise
+                    w.log.emit(f"Error checking {p.title}: {err}")
+                w.progress.emit(i + 1, len(to_check))
+            return len(to_check)
+
+        worker = Worker(job)
+        dlg.canceled.connect(lambda: setattr(worker, "cancelled", True))
+
+        def on_prog(cur, tot):
+            dlg.setValue(cur)
+            if cur < len(to_check):
+                dlg.setLabelText(f"Checking {to_check[cur].title} ({cur + 1}/{tot})…")
+            self.model.refresh()
+            if self.current:
+                self._show(self.table.currentIndex())
+
+        def on_ok(_):
+            dlg.close()
+            self.model.refresh()
+            if self.current:
+                self._show(self.table.currentIndex())
+            if self.owned_only.isChecked():
+                self.apply_filter()
+
+        def on_fail(err_msg):
+            dlg.close()
+            self.model.refresh()
+            if self.current:
+                self._show(self.table.currentIndex())
+            if steam_downloader.STEAM_LOGIN_MISSING in err_msg:
+                QMessageBox.warning(self, "Steam", steam_downloader.STEAM_LOGIN_MISSING)
+            elif "Cancelled" not in err_msg:
+                QMessageBox.warning(self, "Steam", f"Ownership check failed:\n{err_msg.splitlines()[0]}")
+
+        worker.progress.connect(on_prog)
+        worker.finished_ok.connect(on_ok)
+        worker.failed.connect(on_fail)
+        self._check_worker = worker
+        worker.start()
+        dlg.exec()
+
     def apply_filter(self, *_):
         if not hasattr(self, "model"):  # signals can fire while __init__ is still building widgets
             return
         q = self.search.text().strip().lower()
         tiers = {tier_key for tier_key, cb in self.tier_boxes.items() if cb.isChecked()}
         ready = self.ready_only.isChecked()
+        steam_only = self.steam_filter.isChecked()
+        self.model.steam_filter_active = steam_only
+        owned_only = self.owned_only.isChecked() and not self.owned_only.isHidden()
+        creds = steam_auth.get_steam_credentials() if owned_only else None
+        account = creds.get("account_name", "") if creds else ""
 
         def ok(p: core.Port):
             if p.tier not in tiers:
                 return False
-            if ready and not (p.rtr or p.has_files):
-                return False
+            if steam_only:
+                if not p.steam_appid:
+                    return False
+                if owned_only:
+                    owned = p.steam_owned
+                    if owned is None and account:
+                        owned = steam_downloader.get_cached_ownership(account, p.steam_appid)
+                    if owned is not True:
+                        return False
+            else:
+                if ready and not (p.rtr or p.has_files):
+                    return False
             if q and q not in p.title.lower() and not any(q in g for g in p.genres):
                 return False
             return True
@@ -1365,9 +1556,25 @@ class PortsPage(QWidget):
                 w.deleteLater()
         label, color = TIER_META[p.tier]
         self.d_badges.addWidget(Badge(label, color))
+        if p.steam_appid:
+            owned = p.steam_owned
+            if owned is None:
+                creds = steam_auth.get_steam_credentials()
+                if creds:
+                    owned = steam_downloader.get_cached_ownership(creds.get("account_name", ""), p.steam_appid)
+            if owned is True:
+                self.d_badges.addWidget(Badge(t("steam.owned", "✅ Owned"), "#22c55e"))
+            elif owned is False:
+                self.d_badges.addWidget(Badge(t("steam.not_owned", "❌ Not owned"), "#ef4444"))
+            else:
+                self.d_badges.addWidget(Badge(t("steam.not_checked", "? Not checked"), "#9aa0b2"))
         if FREE_ONLY:
-            kind = t("ports.badge_free_rtr", "Free · Ready to play")
-            self.d_badges.addWidget(Badge(kind, "#6ee7a8"))
+            if p.is_free:
+                kind = t("ports.badge_free_rtr", "Free · Ready to play")
+                self.d_badges.addWidget(Badge(kind, "#6ee7a8"))
+            elif not p.steam_appid:
+                kind = t("ports.badge_needs_files", "Requires game files")
+                self.d_badges.addWidget(Badge(kind, "#fb923c"))
         else:
             kind = t("ports.files_ready", "Ready") if p.rtr else t("ports.badge_needs_files", "Requires game files")
             self.d_badges.addWidget(Badge(kind, "#6ee7a8" if p.rtr else "#fb923c"))
@@ -1410,6 +1617,21 @@ class PortsPage(QWidget):
         self.d_beta.setVisible(True)
 
     def _show_local(self, p):
+        if p.steam_appid:
+            owned = p.steam_owned
+            if owned is None:
+                creds = steam_auth.get_steam_credentials()
+                if creds:
+                    owned = steam_downloader.get_cached_ownership(creds.get("account_name", ""), p.steam_appid)
+            owned_str = t("steam.owned", "✅ Owned") if owned is True else t("steam.not_owned", "❌ Not owned") if owned is False else t("steam.not_checked", "? Not checked")
+            recipe = steam_downloader.STEAM_DEPOT_RECIPES.get(p.stem)
+            if recipe:
+                self.d_local.setText(f"🎮 Steam (App {p.steam_appid}): {owned_str}\nDownload recipe: {recipe.os} depot {recipe.depot}")
+            else:
+                self.d_local.setText(f"🎮 Steam (App {p.steam_appid}): {owned_str}")
+            self.d_pick.setEnabled(not p.local_only)
+            self.d_clear.setEnabled(bool(p.local_dir) and not p.local_only)
+            return
         if FREE_ONLY:
             self.d_local.setText(t("ports.badge_free_rtr", "Free · Ready to play ✔"))
             self.d_pick.setEnabled(False)
@@ -2420,6 +2642,8 @@ class Main(QMainWindow):
         else:
             self.steam_btn.setText(t("steam.login_btn", "🎮 Steam Login (QR)"))
             self.steam_btn.setToolTip("Scan QR code with the Steam mobile app to download game files.")
+        if hasattr(self, "p_ports"):
+            self.p_ports.update_steam_auth_ui()
 
     def _on_steam_btn_clicked(self):
         creds = steam_auth.get_steam_credentials()
@@ -2525,7 +2749,7 @@ class Main(QMainWindow):
     def _catalog_ready(self, res):
         ports, self.utils = res
         if FREE_ONLY:
-            self.catalog = [p for p in ports if p.is_free or p.stem in steam_downloader.STEAM_DEPOT_RECIPES]
+            self.catalog = [p for p in ports if p.is_free or p.steam_appid]
         else:
             self.catalog = ports
         self.net.setText(f"PortMaster: {len(self.catalog)} ports")
@@ -2558,7 +2782,7 @@ class Main(QMainWindow):
                     p.beta = core.beta_results_for(p, dev, cfw, beta_rows)
 
             if FREE_ONLY:
-                allp = [p for p in self.catalog if p.is_free or p.stem in steam_downloader.STEAM_DEPOT_RECIPES]
+                allp = [p for p in self.catalog if p.is_free or p.steam_appid]
                 core.classify(allp, dev, cfw, status)
                 try:  # Steam-fillable paid ports need their Steam recipe attached, or the
                     core.attach_steam(allp, steam.installed_apps())  # ready-only filter hides them
