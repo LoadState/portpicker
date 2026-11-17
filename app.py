@@ -2560,6 +2560,10 @@ class Main(QMainWindow):
             if FREE_ONLY:
                 allp = [p for p in self.catalog if p.is_free or p.stem in steam_downloader.STEAM_DEPOT_RECIPES]
                 core.classify(allp, dev, cfw, status)
+                try:  # Steam-fillable paid ports need their Steam recipe attached, or the
+                    core.attach_steam(allp, steam.installed_apps())  # ready-only filter hides them
+                except Exception:  # noqa: BLE001 - Steam is optional; never block the list
+                    pass
                 attach_beta(allp)
                 return allp
 
