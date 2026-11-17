@@ -41,6 +41,11 @@ Progress = Callable[[int, int], None]
 # DepotDownloader is a console app: don't flash an empty console window over PortPicker (Windows).
 NO_CONSOLE_WINDOW = getattr(subprocess, "CREATE_NO_WINDOW", 0)
 
+STEAM_LOGIN_MISSING = (
+    "Steam login was not saved on this PC. Click 'Steam Login (QR)' and scan the QR code again, "
+    "then retry the install."
+)
+
 DEPOT_DOWNLOADER_VERSION = "3.4.0"
 DEPOT_DOWNLOADER_TAG = "DepotDownloader_3.4.0"
 
@@ -365,6 +370,15 @@ def run_depot_downloader_process(
         cleaned = line.strip()
         captured_lines.append(cleaned)
 
+        if "Enter account password" in cleaned or "has stored credentials" in cleaned:
+            proc.terminate()
+            try:
+                proc.wait(timeout=3)
+            except subprocess.TimeoutExpired:
+                proc.kill()
+            steam_auth.forget_local_login()
+            raise RuntimeError(STEAM_LOGIN_MISSING)
+
         if log and ("%" in cleaned or "Download" in cleaned or "Depot" in cleaned):
             log(f"    {cleaned}")
 
@@ -377,7 +391,12 @@ def run_depot_downloader_process(
     proc.wait()
     ret = proc.returncode
     if ret != 0:
-        err_snippet = "\n".join(captured_lines[-5:]) if captured_lines else "Unknown error"
+        if any("SteamUser.LogOn" in l for l in captured_lines):
+            steam_auth.forget_local_login()  # no usable stored token
+            raise RuntimeError(STEAM_LOGIN_MISSING)
+        keys = ("Exception", "Error", "error", "Failed", "failed", "denied", "rejected", "not ", "No ")
+        important = [l for l in captured_lines if any(k in l for k in keys) and not l.startswith("at ")]
+        err_snippet = "\n".join((important[-4:] or captured_lines[-5:])) if captured_lines else "Unknown error"
         raise RuntimeError(f"DepotDownloader failed with exit code {ret}:\n{err_snippet}")
 
     return captured_lines
@@ -479,6 +498,12 @@ def run_depot_downloader_qr_login(
 
     qr_lines: list[str] = []
     in_qr_block = False
+    # DepotDownloader 3.4.0 prints "Success! … -remember-password" *before* it stores the login token
+    # (Steam3Session.ConnectedCallback: LoginTokens[...] = token; AccountSettingsStore.Save()). Killing it on that
+    # line loses the token, and the next download asks for a password. So remember the name and let it finish.
+    account_name: str | None = None
+    success_at: float | None = None
+    SAVE_GRACE_S = 120.0
 
     while True:
         if cancel and cancel():
@@ -488,6 +513,10 @@ def run_depot_downloader_qr_login(
             except subprocess.TimeoutExpired:
                 proc.kill()
             raise InterruptedError("cancelled")
+
+        if success_at is not None and time.time() - success_at > SAVE_GRACE_S:
+            proc.terminate()  # it had plenty of time to save the token and log on
+            break
 
         try:
             line = out_q.get(timeout=0.2)
@@ -524,12 +553,19 @@ def run_depot_downloader_qr_login(
         # Match login success message
         # Format: "Success! Next time you can login with -username <user> -remember-password instead of -qr."
         m = re.search(r"login with -username\s+(\S+)\s+-remember-password", line_str)
-        if m:
+        if m and account_name is None:
             account_name = m.group(1)
-            steam_auth.save_steam_credentials(account_name)
-            on_approved(account_name)
-            proc.terminate()
-            break
+            success_at = time.time()
+            if log:
+                log("  ✔ Steam approved; saving the login…")
+
+    try:
+        proc.wait(timeout=10)
+    except subprocess.TimeoutExpired:
+        proc.kill()
+    if account_name:
+        steam_auth.save_steam_credentials(account_name)
+        on_approved(account_name)
 
 
 # --------------------------------------------------------------------------
