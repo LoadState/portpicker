@@ -30,6 +30,7 @@ import paramiko
 
 from i18n import t as _tr
 import core
+import steam_downloader
 from profiles import CFW, Device, DEVICES, MUOS
 
 # --------------------------------------------------------------------------
@@ -1053,6 +1054,16 @@ def transfer_port_wireless(
             plan = core.plan_local_files(root, zip_names, port.inst, core.list_files(port.local_dir))
             log(_tr("log.game_files_from", "  ⇢ Game files from {src} → {dst}", src=port.local_dir, dst=root))
             core.copy_planned(port.local_dir, stage_dir / root, plan, overwrite_local, cancel)
+        elif port.steam_ready:
+            r, src = port.steam.recipe, port.steam.app.path
+            dst = stage_dir / r.dest
+            log(_tr("log.copy_steam", "  🎮 Staging game files from local Steam: {src}", src=src))
+            core.merge_tree(src, dst, overwrite_local, log, cancel)
+        elif getattr(port, "steam_download_ready", False) and port.steam_depot:
+            recipe = port.steam_depot
+            dst = stage_dir / recipe.dest
+            log(_tr("log.download_steam", "  🎮 Downloading selective game files from Steam for {title}…", title=port.title))
+            steam_downloader.download_steam_files(recipe, dst, log=log, progress=progress, cancel=cancel)
         elif port.needs_files:
             log(_tr("log.needs_game_files", "  ⚠ This game requires additional game files: {inst}",
                     inst=port.inst or "see port page on portmaster.games"))

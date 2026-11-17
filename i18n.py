@@ -1016,6 +1016,65 @@ STRINGS: dict[str, dict[str, str]] = {
         "en": "Unknown cause — copy error text below and report",
         "th": "ไม่ทราบสาเหตุ — ก๊อปข้อความด้านล่างส่งมาได้",
     },
+    # ------------------------------------------------------------------------
+    # Steam QR Login & Download
+    # ------------------------------------------------------------------------
+    "steam.login_btn": {
+        "en": "🎮 Steam Login (QR)",
+        "th": "🎮 เข้าสู่ระบบ Steam (QR)",
+    },
+    "steam.logged_in": {
+        "en": "🎮 Steam: {name}",
+        "th": "🎮 Steam: {name}",
+    },
+    "steam.logout_btn": {
+        "en": "Log out",
+        "th": "ออกจากระบบ",
+    },
+    "steam.dialog_title": {
+        "en": "Steam QR Login",
+        "th": "เข้าสู่ระบบ Steam ด้วย QR Code",
+    },
+    "steam.instructions": {
+        "en": "Open Steam Mobile App → Steam Guard (shield icon) → Scan QR Code → Approve",
+        "th": "เปิดแอป Steam ในมือถือ → ไปที่ Steam Guard (รูปโล่) → สแกน QR code แล้วกดยืนยัน",
+    },
+    "steam.waiting_approval": {
+        "en": "Waiting for mobile approval…",
+        "th": "กำลังรอการยืนยันบนมือถือของคุณ…",
+    },
+    "steam.approved": {
+        "en": "✅ Successfully logged in as {name}!",
+        "th": "✅ เข้าสู่ระบบสำเร็จในชื่อ {name}!",
+    },
+    "steam.expired": {
+        "en": "⚠ QR code expired. Please generate a new one.",
+        "th": "⚠ QR code หมดอายุ กรุณาสร้างใหม่",
+    },
+    "steam.error": {
+        "en": "⚠ Login failed: {err}",
+        "th": "⚠ เข้าสู่ระบบไม่สำเร็จ: {err}",
+    },
+    "steam.close": {
+        "en": "Close",
+        "th": "ปิด",
+    },
+    "reason.steam_download_ready": {
+        "en": "🎮 Available to download from Steam (QR Login active)",
+        "th": "🎮 พร้อมดาวน์โหลดจาก Steam (เข้าสู่ระบบ QR แล้ว)",
+    },
+    "reason.steam_download_available": {
+        "en": "🎮 Steam download available (Login with Steam QR code)",
+        "th": "🎮 มีให้ดาวน์โหลดจาก Steam (ล็อกอินผ่าน QR Code)",
+    },
+    "log.download_steam": {
+        "en": "  🎮 Downloading selective game files from Steam for {title}…",
+        "th": "  🎮 กำลังดาวน์โหลดไฟล์เกมจาก Steam สำหรับ {title}…",
+    },
+    "log.copied_steam_download": {
+        "en": "  ✔ Placed {count} Steam files into {dest}",
+        "th": "  ✔ ติดตั้งไฟล์ Steam จำนวน {count} ไฟล์ลงใน {dest}",
+    },
 }
 
 
