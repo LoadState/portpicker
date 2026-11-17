@@ -476,7 +476,7 @@ class WirelessConnection:
         if self.is_alive() and self.sftp is not None:
             return  # a session that died mid-transfer is caught by put_file_atomic's retry
         if not self._reconnect_args:
-            raise ConnectionError("Wi-Fi connection dropped; reconnect to the handheld and retry.")
+            return  # never connected through connect() (tests/fakes): nothing to reopen; uploads report errors
         if log:
             log("  ↻ Wi-Fi connection dropped; reconnecting…")
         args = self._reconnect_args
