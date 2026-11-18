@@ -23,7 +23,7 @@ def _port(title, name):
 def test_parse_and_match_device_cfw_port():
     rows = core.parse_beta_results(CSV)
     assert len(rows) == 3 and rows[0]["artwork"] == "Yes" and rows[0]["tester"] == "tawa"
-    sp = next(d for d in DEVICES if d.id == "h700-nosticks")
+    sp = next(d for d in DEVICES if d.id == "h700")
     brick = next(d for d in DEVICES if d.id == "brickpro")
     cave = _port("Cave Story (Evo)", "cave.story-evo.zip")
     hits = core.beta_results_for(cave, sp, MUOS, rows)
@@ -42,6 +42,6 @@ def test_unshared_sheet_gives_nothing():
 
 def test_generic_h700_sees_results_from_any_h700_model():
     rows = core.parse_beta_results(CSV)
-    gen = next(d for d in DEVICES if d.id == "h700-nosticks")
+    gen = next(d for d in DEVICES if d.id == "h700")
     cave = _port("Cave Story (Evo)", "cave.story-evo.zip")
     assert [h["tester"] for h in core.beta_results_for(cave, gen, MUOS, rows)] == ["tawa"]  # SP yes, Brick Pro no
