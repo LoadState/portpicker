@@ -235,19 +235,19 @@ def mock_remote_env():
 
 def test_device_matching_from_strings():
     """Verify raw strings from handhelds match correct Device entries."""
-    assert wireless.match_device_from_string("rg35xx-sp").id == "h700-nosticks"
-    assert wireless.match_device_from_string("Anbernic RG35XX SP").id == "h700-nosticks"
+    assert wireless.match_device_from_string("rg35xx-sp").id == "h700"
+    assert wireless.match_device_from_string("Anbernic RG35XX SP").id == "h700"
     assert wireless.match_device_from_string("tg5040").id == "brickpro"
     assert wireless.match_device_from_string("TrimUI Brick Pro").id == "brickpro"
     assert wireless.match_device_from_string("TrimUI Smart Pro").id == "smartpro"
     assert wireless.match_device_from_string("TrimUI Brick").id == "brick"
-    assert wireless.match_device_from_string("RG40XX H").id == "h700-sticks"
-    assert wireless.match_device_from_string("rg35xx-h").id == "h700-sticks"
-    assert wireless.match_device_from_string("RG35XX Plus").id == "h700-nosticks"
+    assert wireless.match_device_from_string("RG40XX H").id == "h700"
+    assert wireless.match_device_from_string("rg35xx-h").id == "h700"
+    assert wireless.match_device_from_string("RG35XX Plus").id == "h700"
     assert wireless.match_device_from_string("r36s").id == "r36s"
     assert wireless.match_device_from_string("rg353v").id == "rg353v"
-    assert wireless.match_device_from_string("H700").id == "h700-nosticks"
-    assert wireless.match_device_from_string("H700-sticks").id == "h700-sticks"
+    assert wireless.match_device_from_string("H700").id == "h700"
+    assert wireless.match_device_from_string("H700-sticks").id == "h700"
 
 
 def test_dpapi_credential_save_and_retrieve(tmp_path):
@@ -274,12 +274,12 @@ def test_probe_muos_sftp_dual_sd(mock_remote_env):
     sftp.dirs.add("/Internal")
     sftp.dirs.add("/Catalogue")
 
-    dev_hint = next(d for d in DEVICES if d.id == "h700-nosticks")
+    dev_hint = next(d for d in DEVICES if d.id == "h700")
     probe = wireless.probe_remote(conn, device_hint=dev_hint)
 
     assert probe.cfw_id == "muos"
     assert probe.cfw_version == "2606.0"
-    assert probe.device_id == "h700-nosticks"
+    assert probe.device_id == "h700"
     assert probe.pm_version == "2024.11.01"
     assert probe.layout.dual_sd is True
     # SD2 (Secondary Storage) is used for games, SD1 (Primary Storage) for runtimes, Catalogue for box art
@@ -297,7 +297,7 @@ def test_probe_muos_sftp_single_sd(mock_remote_env):
     sftp.files["/Internal/version"] = b"2606.1\n"
     sftp.dirs.discard("/Secondary Storage")
 
-    dev_hint = next(d for d in DEVICES if d.id == "h700-nosticks")
+    dev_hint = next(d for d in DEVICES if d.id == "h700")
     probe = wireless.probe_remote(conn, device_hint=dev_hint)
 
     assert probe.cfw_id == "muos"
@@ -328,7 +328,7 @@ def test_translate_handheld_path_to_sftp():
 def test_validate_sftp_write_path_rejects_forbidden(mock_remote_env):
     """Verify validation strictly rejects /Internal, /Boot, /tmp, and paths outside allowed roots."""
     conn, _, _ = mock_remote_env
-    dev_hint = next(d for d in DEVICES if d.id == "h700-nosticks")
+    dev_hint = next(d for d in DEVICES if d.id == "h700")
     probe = wireless.probe_remote(conn, device_hint=dev_hint)
     layout = probe.layout
 
@@ -428,7 +428,7 @@ def test_fake_sftp_only_server_exec_raises(tmp_path, mock_remote_env):
     with pytest.raises(paramiko.SSHException, match="exec channel disabled"):
         ssh.exec_command("echo test")
 
-    dev = next(d for d in DEVICES if d.id == "h700-nosticks")
+    dev = next(d for d in DEVICES if d.id == "h700")
     probe = wireless.probe_remote(conn, device_hint=dev)
 
     port_zip_path = tmp_path / "testport.zip"
@@ -549,7 +549,7 @@ def test_tofu_host_key_retrust(tmp_path, monkeypatch):
 def test_wireless_target_properties(mock_remote_env):
     """Verify WirelessTarget satisfies Target interface for core functions."""
     conn, _, _ = mock_remote_env
-    dev = next(d for d in DEVICES if d.id == "h700-nosticks")
+    dev = next(d for d in DEVICES if d.id == "h700")
     probe = wireless.probe_remote(conn, device_hint=dev)
 
     wt = wireless.WirelessTarget(MUOS, conn, probe)
@@ -567,7 +567,7 @@ def test_clean_port_dir_safety(tmp_path, mock_remote_env):
     sftp.dirs.add("/Secondary Storage/ports")
     sftp.dirs.add("/Secondary Storage/ports/safegame")
     sftp.files["/Secondary Storage/ports/safegame/old.bin"] = b"old"
-    dev = next(d for d in DEVICES if d.id == "h700-nosticks")
+    dev = next(d for d in DEVICES if d.id == "h700")
     probe = wireless.probe_remote(conn, device_hint=dev)
 
     port = make_port(

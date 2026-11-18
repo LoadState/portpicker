@@ -39,7 +39,8 @@ class Device:
     enabled: bool
     arch: str = "aarch64"
     extra_arch: set[str] = field(default_factory=lambda: {"armhf"})
-    sticks: int = 0
+    sticks: int = 0                                          # only used to draw the device art
+    models: str = ""                                         # models in this family, shown on the card
     tags: set[str] = field(default_factory=set)              # matched against "!tag" reqs
     unsupported_reqs: set[str] = field(default_factory=set)
     max_glibc: str = ""
@@ -230,9 +231,9 @@ CFWS = [
 ]
 
 # Hardware-verified device + CFW combinations
+# (kept for the record; the app no longer shows a "tested" badge — T-058)
 TESTED_PAIRS: set[tuple[str, str]] = {
-    ("h700-nosticks", "muos"),  # RG35XX SP, 2026-11-12/17 dev test: 1 and 2 cards, SD and Wi-Fi
-    ("h700-sticks", "muos"),  # RG35XX H, 2026-11-14 dev test: 1 and 2 cards
+    ("h700", "muos"),  # RG35XX SP 2026-11-12/17 (1 and 2 cards, SD and Wi-Fi), RG35XX H 2026-11-14
     ("brickpro", "muos"),  # 2026-11-13 dev test: works
 }
 
@@ -282,7 +283,7 @@ DEVICES = [
     # --- TrimUI (Allwinner A133P) ---
     Device(
         id="brickpro", name="TrimUI Brick Pro", chip="Allwinner A133P", ram="1 GB",
-        screen='3.95" 1024×768', enabled=True, sticks=2,
+        screen='3.95" 1024×768', enabled=False, sticks=2,
         tags={"trimui", "lowpower"}, unsupported_reqs=LOW_RAM,
         cfws=["nextui", "muos", "knulli", "spruce", "crossmix"],
         must_have=A133P_MUST, heavy=A133P_HEAVY,
@@ -304,33 +305,20 @@ DEVICES = [
         must_have=A133P_MUST, heavy=A133P_HEAVY,
         body="#1f2229", accent="#5ab0ff", aspect=16 / 9, tall=False,
     ),
-    # --- Anbernic H700: one card per stick count (2026-11-17, Tawaphol) ---
-    # All H700 models share chip, RAM and CFW folder layout, so installs work the same; the stick count
-    # decides which ports are recommended. Screen size is not used to filter.
+    # --- Anbernic H700: one card for the whole family (T-058, 2026-11-18, Tawaphol) ---
+    # Every H700 model has the same chip, RAM and CFW folder layout, so one card installs the same way on all
+    # of them. The screen size is not shown; 640×480 (the smallest H700 screen) is used to size box art so it
+    # fits on every model.
     Device(
-        id="h700-nosticks", name="Anbernic H700 (no sticks)", chip="Allwinner H700", ram="1 GB",
-        screen="640×480 · RG35XX SP / Plus / 2024, RG28XX, RG34XX …", enabled=True, sticks=0,
+        id="h700", name="Anbernic H700", chip="Allwinner H700", ram="1 GB",
+        screen="640×480", enabled=True, sticks=2,
+        models="RG35XX SP · Plus · H · Pro · 2024, RG28XX, RG34XX / SP, RG40XX H / V, RG CubeXX",
         tags={"lowpower"}, unsupported_reqs=LOW_RAM,
-        cfws=["muos", "knulli", "rocknix", "spruce"],
+        cfws=["muos", "knulli"],
         must_have=A133P_MUST, heavy=A133P_HEAVY,
         body="#7b8794", accent="#e11d48",
     ),
-    Device(
-        id="h700-1stick", name="Anbernic H700 (1 stick)", chip="Allwinner H700", ram="1 GB",
-        screen="640×480 · RG40XX V …", enabled=True, sticks=1,
-        tags={"lowpower"}, unsupported_reqs=LOW_RAM,
-        cfws=["muos", "knulli", "rocknix"],
-        must_have=A133P_MUST, heavy=A133P_HEAVY,
-        body="#4b5160", accent="#fbbf24",
-    ),
-    Device(
-        id="h700-sticks", name="Anbernic H700 (2 sticks)", chip="Allwinner H700", ram="1 GB",
-        screen="640×480 · RG35XX H, RG40XX H …", enabled=True, sticks=2,
-        tags={"lowpower"}, unsupported_reqs=LOW_RAM,
-        cfws=["muos", "knulli", "rocknix"],
-        must_have=A133P_MUST, heavy=A133P_HEAVY,
-        body="#2f3440", accent="#38bdf8", tall=False,
-    ),
+
     # --- Rockchip ---
     Device(
         id="r36s", name="R36S", chip="Rockchip RK3326", ram="1 GB",

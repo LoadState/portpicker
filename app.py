@@ -26,7 +26,7 @@ import steam_auth
 import steam_downloader
 import wireless
 from i18n import t
-from profiles import CFWS, DEVICES, CFW, Device, is_tested, MUOS
+from profiles import CFWS, DEVICES, CFW, Device, MUOS
 
 APP_NAME = "PortPicker"
 FREE_ONLY = False
@@ -464,14 +464,15 @@ class DevicePage(QWidget):
         t_label = QLabel(t("device.title", "Select Your Handheld"))
         t_label.setStyleSheet("font-size:24px;font-weight:700;")
         v.addWidget(t_label)
-        v.addWidget(muted(t("device.subtitle", "PortPicker filters ports based on device specs, analog sticks, and CFW")))
+        v.addWidget(muted(t("device.subtitle", "Pick your device family")))
         holder = QWidget()
         grid = QGridLayout(holder)
         grid.setSpacing(16)
         grid.setContentsMargins(0, 8, 0, 8)
         self.cards = []
         cols = 4
-        for i, d in enumerate(DEVICES):
+        shown = [d for d in DEVICES if d.enabled]  # T-058: only families we support right now
+        for i, d in enumerate(shown):
             c = Card(d, d.enabled)
             c.setFixedSize(250, 300)
             c.v.addWidget(DeviceArt(d), 1)
@@ -479,14 +480,14 @@ class DevicePage(QWidget):
             name.setWordWrap(True)  # long names wrap instead of being cut off
             name.setStyleSheet("font-size:16px;font-weight:700;")
             c.v.addWidget(name)
-            c.v.addWidget(muted(f"{d.chip} · RAM {d.ram}\n{d.screen} · {d.sticks} {t('device.sticks', 'sticks')}"))
-            if not d.enabled:
-                c.v.addWidget(Badge(t("device.coming_soon", "Coming Soon"), "#8b8fa3"))
+            info = muted(d.models or d.chip)
+            info.setWordWrap(True)
+            c.v.addWidget(info)
             c.clicked.connect(self._pick)
             grid.addWidget(c, i // cols, i % cols)
             self.cards.append(c)
         grid.setColumnStretch(cols, 1)
-        grid.setRowStretch(len(DEVICES) // cols + 1, 1)
+        grid.setRowStretch(len(shown) // cols + 1, 1)
         sc = QScrollArea()
         sc.setWidgetResizable(True)
         sc.setWidget(holder)
@@ -632,12 +633,10 @@ class CfwPage(QWidget):
         self.cards = []
         for cid in dev.cfws:
             cfw = next(c for c in CFWS if c.id == cid)
-            tested = is_tested(dev, cfw)
-            self._add_card(cfw, cfw.name, cfw.blurb, cfw.accent, cfw.enabled, tested=tested)
-        self._add_card("custom", "Custom", t("cfw.custom_desc", "Specify ports folder manually\n(Other CFW / Testing)"), "#94a3b8", True, tested=True)
+            self._add_card(cfw, cfw.name, cfw.blurb, cfw.accent, cfw.enabled)
         self.grid.addStretch()
 
-    def _add_card(self, payload, title, blurb, color, enabled, tested=True):
+    def _add_card(self, payload, title, blurb, color, enabled):
         c = Card(payload, enabled)
         c.setFixedSize(220, 185)
         logo = QLabel(title[:2].upper())
@@ -649,8 +648,6 @@ class CfwPage(QWidget):
         n.setStyleSheet("font-weight:700;font-size:15px;" + ("" if enabled else "color:#5d6275;"))
         c.v.addWidget(n)
         c.v.addWidget(muted(blurb))
-        if payload != "custom" and enabled and not tested:
-            c.v.addWidget(Badge("Beta — not tested on real hardware", "#f59e0b"))
         c.clicked.connect(self._pick)
         self.grid.addWidget(c)
         self.cards.append(c)
@@ -1275,9 +1272,6 @@ class PortsPage(QWidget):
         root.addWidget(split, 1)
 
         foot = QHBoxLayout()
-        b1 = QPushButton(t("ports.btn_select_rec", "⭐ Select Recommended"))
-        b1.clicked.connect(self.select_recommended)
-        foot.addWidget(b1)
         b2 = QPushButton(t("ports.btn_clear_sel", "Clear Selection"))
         b2.clicked.connect(self.clear_selection)
         foot.addWidget(b2)
@@ -2087,10 +2081,14 @@ class WirelessConnectDialog(QDialog):
         p_lbl = QLabel(t("wireless.port", "Port:"))
         p_lbl.setFixedWidth(140)
         port_row.addWidget(p_lbl)
-        self.port_txt = QLineEdit(str(wireless.DEFAULT_WIRELESS_PORT))
+        hint_id = cfw_hint.id if cfw_hint else None
+        self.port_txt = QLineEdit(str(wireless.default_port_for(hint_id)))
         self.port_txt.setFixedWidth(100)
         port_row.addWidget(self.port_txt)
-        hint_sftp = QLabel(t("wireless.sftp_doc_hint", "muOS Secure File Transfer (default: port 2022, muos / muos · muos.dev/web/sftp)"))
+        if hint_id == "knulli":
+            hint_sftp = QLabel(t("wireless.sftp_doc_hint_knulli", "KNULLI SSH (default: port 22, root / linux · System Settings → Services → SSH)"))
+        else:
+            hint_sftp = QLabel(t("wireless.sftp_doc_hint", "muOS Secure File Transfer (default: port 2022, muos / muos · muos.dev/web/sftp)"))
         hint_sftp.setStyleSheet("color:#818cf8;font-size:11px;")
         port_row.addWidget(hint_sftp)
         port_row.addStretch()
@@ -2112,7 +2110,8 @@ class WirelessConnectDialog(QDialog):
         u_lbl = QLabel(t("wireless.user", "Username:"))
         u_lbl.setFixedWidth(140)
         u_row.addWidget(u_lbl)
-        self.user_txt = QLineEdit("muos")
+        def_user, def_pass = wireless.default_user_for(hint_id)
+        self.user_txt = QLineEdit(def_user)
         u_row.addWidget(self.user_txt, 1)
         cg_layout.addLayout(u_row)
 
@@ -2120,7 +2119,7 @@ class WirelessConnectDialog(QDialog):
         pw_lbl = QLabel(t("wireless.password", "Password:"))
         pw_lbl.setFixedWidth(140)
         pw_row.addWidget(pw_lbl)
-        self.pwd_txt = QLineEdit("muos")
+        self.pwd_txt = QLineEdit(def_pass)
         self.pwd_txt.setEchoMode(QLineEdit.Password)
         pw_row.addWidget(self.pwd_txt, 1)
         cg_layout.addLayout(pw_row)

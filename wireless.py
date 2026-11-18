@@ -1,9 +1,12 @@
 """PortPicker wireless transfer module: SSH/SFTP connection, probe, atomic transfer, and hooks.
 
-Supports muOS on Anbernic H700 / supported handhelds via Secure File Transfer (SFTP).
-Default port: 2022, username/password: muos / muos (official doc: muos.dev/web/sftp).
-Detection: SFTP virtual root with /Primary Storage, /Internal, /Catalogue.
-Path mapping:
+muOS: Secure File Transfer (SFTP), port 2022, muos / muos (official doc: muos.dev/web/sftp).
+  Detection: SFTP virtual root with /Primary Storage, /Internal, /Catalogue.
+KNULLI: SSH/SFTP, port 22, root / linux (knulli.org/play/add-games/network-transfer; System Settings → Services → SSH).
+  Detection: /userdata/roms/ports (the same check PortMaster's harbourmaster uses). Only /userdata is writable.
+  Ports + scripts: /userdata/roms/ports, runtimes: /userdata/system/.local/share/PortMaster/libs,
+  game list: /userdata/roms/ports/gamelist.xml.
+muOS path mapping:
   /mnt/mmc    → /Primary Storage (SD1: system, runtimes, PortMaster libs)
   /mnt/sdcard → /Secondary Storage (SD2: ROMS/ports)
   catalogue   → /Catalogue (box art: /Catalogue/External - Ports/box)
@@ -32,7 +35,7 @@ import paramiko
 from i18n import t as _tr
 import core
 import steam_downloader
-from profiles import CFW, Device, DEVICES, MUOS
+from profiles import CFW, Device, DEVICES, KNULLI, MUOS
 
 # --------------------------------------------------------------------------
 # Types and Constants
@@ -47,6 +50,8 @@ DEFAULT_WIRELESS_PORT = 2022
 
 KNOWN_MDNS_HOSTS = [
     ("muos.local", "muos"),
+    ("KNULLI", "knulli"),        # KNULLI's default host name (knulli.org)
+    ("knulli.local", "knulli"),
 ]
 
 # Default credentials for muOS: list of (user, password, port)
@@ -56,12 +61,30 @@ CFW_DEFAULT_CREDENTIALS: dict[str, list[tuple[str, str, int]]] = {
         ("muos", "muos", 2022),
         ("root", "root", 22),
     ],
+    # knulli.org/play/add-games/network-transfer: port 22, root / linux. With "Enforce security" on, KNULLI uses a
+    # random root password shown in System Settings → Security; the user types it in.
+    "knulli": [
+        ("root", "linux", 22),
+    ],
 }
 
 GENERIC_DEFAULT_CREDENTIALS = [
     ("muos", "muos", 2022),
+    ("root", "linux", 22),
     ("root", "root", 22),
 ]
+
+KNULLI_PORTS_DIR = "/userdata/roms/ports"
+KNULLI_LIBS_DIR = "/userdata/system/.local/share/PortMaster/libs"
+
+
+def default_port_for(cfw_id: str | None) -> int:
+    """Default SFTP port for a CFW: 22 for KNULLI, 2022 (muOS Secure File Transfer) otherwise."""
+    return 22 if cfw_id == "knulli" else DEFAULT_WIRELESS_PORT
+
+
+def default_user_for(cfw_id: str | None) -> tuple[str, str]:
+    return ("root", "linux") if cfw_id == "knulli" else ("muos", "muos")
 
 FORBIDDEN_SFTP_PREFIXES = (
     "/Internal",
@@ -441,11 +464,11 @@ class WirelessConnection:
         except (socket.error, paramiko.SSHException) as e:
             err_str = str(e).lower()
             is_refused = "connection refused" in err_str or getattr(e, "errno", None) == socket.errno.ECONNREFUSED
-            if port == 22 and is_refused:
+            if is_refused:
                 raise ConnectionError(
-                    f"Connection refused on port 22 for {host}.\n"
-                    f"Turn on Secure File Transfer in muOS (port 2022):\n"
-                    f"Configuration > Connectivity > Web Services."
+                    f"Connection refused on port {port} for {host}.\n"
+                    f"muOS: turn on Secure File Transfer (port 2022): Configuration > Connectivity > Web Services.\n"
+                    f"KNULLI: turn on SSH (port 22): System Settings > Services > SSH."
                 ) from e
             raise
 
@@ -753,6 +776,15 @@ def _read_probe_file(conn: WirelessConnection, paths: list[str]) -> str | None:
     return None
 
 
+def _knulli_version(conn: WirelessConnection) -> str:
+    """KNULLI build date (YYYYMMDD) from the Batocera version file, or "" if it can't be read.
+    "" skips the minimum-version check rather than blocking on a format we don't recognise."""
+    import re
+    txt = _read_probe_file(conn, ["/usr/share/batocera/batocera.version", "/userdata/system/data.version"]) or ""
+    m = re.search(r"\b(20\d{6})\b", txt)
+    return m.group(1) if m else ""
+
+
 def match_device_from_string(raw: str) -> Device | None:
     """Match raw model string (e.g. 'rg35xx-sp', 'tg5040') to a PortPicker Device."""
     s = raw.lower().replace("-", "").replace("_", "").replace(" ", "")
@@ -764,22 +796,13 @@ def match_device_from_string(raw: str) -> Device | None:
         return next((d for d in DEVICES if d.id == "brick"), None)
     # Anbernic H700: one card per stick count. Models whose stick count we have not confirmed
     # return None so the card the user picked is kept.
-    if "rg34xxsp" in s or "rgcubexx" in s:
-        return None
-    if "rg40xxv" in s:
-        return next((d for d in DEVICES if d.id == "h700-1stick"), None)
-    if any(k in s for k in ("rg40xxh", "rg35xxh")):
-        return next((d for d in DEVICES if d.id == "h700-sticks"), None)
-    if any(k in s for k in ("rg35xxsp", "rg35xxplus", "rg35xx2024", "rg28xx", "rg34xx", "rg35xx")):
-        return next((d for d in DEVICES if d.id == "h700-nosticks"), None)
+    # Anbernic H700: one card for the whole family (T-058)
+    if any(k in s for k in ("rg35xx", "rg28xx", "rg34xx", "rg40xx", "rgcubexx", "h700")):
+        return next((d for d in DEVICES if d.id == "h700"), None)
     if "r36s" in s:
         return next((d for d in DEVICES if d.id == "r36s"), None)
     if "rg353v" in s:
         return next((d for d in DEVICES if d.id == "rg353v"), None)
-    if "h700" in s:
-        if "stick" in s:
-            return next((d for d in DEVICES if d.id == "h700-sticks"), None)
-        return next((d for d in DEVICES if d.id == "h700-nosticks"), None)
     return None
 
 
@@ -811,6 +834,7 @@ def probe_remote(conn: WirelessConnection, device_hint: Device | None = None) ->
             root_entries = set()
 
     cfw_ver = "unknown"
+    is_knulli = False
     if is_muos_sftp:
         ver_txt = _read_probe_file(conn, [
             "/Internal/config/system/version",
@@ -825,11 +849,15 @@ def probe_remote(conn: WirelessConnection, device_hint: Device | None = None) ->
             cfw_ver = muos_ver
         elif conn.isdir("/opt/muos"):
             cfw_ver = "unknown"
+        elif conn.isdir(KNULLI_PORTS_DIR):
+            # KNULLI (Batocera): PortMaster itself detects it by /userdata/roms/ports.
+            is_knulli = True
+            cfw_ver = _knulli_version(conn)
         else:
-            raise ValueError("Unsupported firmware: only muOS is currently supported for wireless transfer.")
+            raise ValueError("Unsupported firmware: PortPicker supports muOS and KNULLI over Wi-Fi.")
 
-    cfw_id = "muos"
-    cfw_obj = MUOS
+    cfw_id = "knulli" if is_knulli else "muos"
+    cfw_obj = KNULLI if is_knulli else MUOS
 
     # 2. Device model: use device chosen in step 1 (device_hint) or probe
     matched_dev = None
@@ -844,10 +872,17 @@ def probe_remote(conn: WirelessConnection, device_hint: Device | None = None) ->
         if board_str:
             matched_dev = match_device_from_string(board_str)
         if not matched_dev:
-            matched_dev = next((d for d in DEVICES if d.id == "h700-nosticks"), DEVICES[0])
+            matched_dev = next((d for d in DEVICES if d.id == "h700"), DEVICES[0])
 
     # 3. Mounts & Storage Layout
-    if is_muos_sftp:
+    if is_knulli:
+        dual_sd = False  # KNULLI always mounts the games storage at /userdata
+        system_root = games_root = "/userdata"
+        ports_dir = scripts_dir = KNULLI_PORTS_DIR
+        libs_dir = KNULLI_LIBS_DIR
+        media_dir = ""  # box art goes into roms/ports/gamelist.xml instead (see update_remote_gamelist)
+        pm_ver = _read_probe_file(conn, ["/userdata/system/.local/share/PortMaster/version"])
+    elif is_muos_sftp:
         dual_sd = "Secondary Storage" in root_entries or conn.isdir("/Secondary Storage")
         system_root = "/Primary Storage"
         games_root = "/Secondary Storage" if dual_sd else "/Primary Storage"
@@ -987,7 +1022,7 @@ def connect_with_credentials_or_defaults(
             conn.close()
             raise
 
-    # 3. Try muOS default credentials (muos:muos on 2022, root:root on 22)
+    # 3. Try the CFW's default credentials (muOS muos:muos on 2022, KNULLI root:linux on 22)
     creds_to_try: list[tuple[str, str, int]] = []
     if cfw_hint and cfw_hint in CFW_DEFAULT_CREDENTIALS:
         creds_to_try.extend(CFW_DEFAULT_CREDENTIALS[cfw_hint])
@@ -999,7 +1034,8 @@ def connect_with_credentials_or_defaults(
 
     last_err: Exception | None = None
     for u, p, p_port in creds_to_try:
-        use_port = port if port != DEFAULT_WIRELESS_PORT else p_port
+        # the dialog pre-fills the CFW's default port; only a port the user changed overrides each default's own port
+        use_port = p_port if port in (DEFAULT_WIRELESS_PORT, default_port_for(cfw_hint)) else port
         try:
             conn.connect(host, port=use_port, username=u, password=p, timeout=timeout, retrust=retrust)
             conn.is_default_password = True
@@ -1242,10 +1278,40 @@ def transfer_port_wireless(
         for sh_path in uploaded_scripts:
             conn.chmod_x(sh_path)
 
+        # 7. KNULLI: add the port to roms/ports/gamelist.xml (name, picture, description), like PortMaster does
+        if probe.cfw_id == "knulli":
+            update_remote_gamelist(conn, layout, stage_dir, port.dirs, log)
+
         log(_tr("log.installed_pm", "  ✔ Installed port over wireless"))
 
     finally:
         shutil.rmtree(stage_dir, ignore_errors=True)
+
+
+def update_remote_gamelist(conn: WirelessConnection, layout: RemoteLayout, stage_dir: Path,
+                           dirs, log: Log) -> None:
+    """Merge the port's gameinfo.xml into <ports_dir>/gamelist.xml on the handheld (old list kept as .bak)."""
+    infos = core.gameinfo_files(stage_dir, dirs)
+    if not infos:
+        return
+    remote_gl = f"{layout.ports_dir}/gamelist.xml"
+    validate_sftp_write_path(remote_gl, layout)
+    try:
+        old = conn.read_text(remote_gl)
+        new = old
+        for f in infos:
+            new = core.merge_gameinfo(new, f.read_text(encoding="utf-8", errors="replace"))
+        if old is not None:
+            bak = stage_dir / "gamelist.xml.bak"
+            bak.write_text(old, encoding="utf-8")
+            conn.put_file_atomic(bak, f"{remote_gl}.bak")
+        local_gl = stage_dir / "gamelist.xml"
+        local_gl.write_text(new, encoding="utf-8")
+        conn.put_file_atomic(local_gl, remote_gl)
+        log(_tr("log.gamelist_updated", "  ✔ Added to the KNULLI game list (name, picture, description)"))
+    except (OSError, ValueError, ConnectionError) as e:
+        log(_tr("log.gamelist_failed", "  ⚠ Could not update gamelist.xml ({err}); the game still works — "
+                "use Game Settings → Update Gamelists on the handheld", err=e))
 
 
 def finalize_wireless_session(conn: WirelessConnection, cfw_id: str, log: Log) -> None:

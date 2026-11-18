@@ -158,7 +158,7 @@ def beta_results_for(port: "Port", dev, cfw, rows: list[dict]) -> list[dict]:
     hits = []
     for r in rows:
         rd, rc, rp = _norm(r["device"]), _norm(r["cfw"]), _norm(r["port"])
-        if dev.id.startswith("h700-"):  # generic H700 card: results from any H700 model apply
+        if dev.id.startswith("h700"):  # generic H700 card: results from any H700 model apply
             if not any(k in rd for k in ("rg35xx", "rg34xx", "rg28xx", "rg40xx", "rgcubexx", "h700")):
                 continue
         elif rd not in (dn, did) and not (len(rd) >= 4 and (rd in dn or dn in rd)):
@@ -432,10 +432,6 @@ def classify(ports: Iterable[Port], dev: Device, cfw: CFW, status: dict) -> None
                 bad.append(r)
             elif rl in ("arkos", "rocknix", "muos", "knulli", "retrodeck") and rl not in cfw_tags:
                 bad.append(r)
-            elif rl.startswith("analog_"):
-                need = min(int(x[-1]) for x in rl.split("|"))
-                if dev.sticks < need:
-                    bad.append(r)
         if bad:
             p.tier = "incompatible"; p.reasons.append(_tr("reason.needs_reqs", "Requires: {reqs}", reqs=", ".join(bad))); continue
         cap = cfw.max_glibc if cfw.max_glibc is not None else dev.max_glibc
@@ -1146,7 +1142,7 @@ def check_device_card_match(dev: Device, card_device_str: str | None) -> tuple[b
     if dev_is_h700 and not card_is_h700 and ("brick" in s or "rk3566" in s or "rk3326" in s):
         return (False, f"Device mismatch: card is for {card_device_str}, but selected device is {dev.name}")
 
-    if dev_id.startswith("h700-") and card_is_h700:  # generic H700 cards accept any H700 model
+    if dev_id.startswith("h700") and card_is_h700:  # the H700 card accepts any H700 model
         return (True, f"Matched {card_device_str} (H700)")
 
     if dev_id in s or dev_name in s or (len(s) >= 4 and s in dev_name):
@@ -1729,6 +1725,78 @@ def install_port(p: Port, t: Target, dev: Device, utils: dict, log: Log,
         if img:
             t.media_dir.mkdir(parents=True, exist_ok=True)
             copy_box_art(img, t.media_dir / (Path(p.scripts[0]).stem + ".png"), dev)
+
+    if uses_gamelist(t.cfw):
+        update_gamelist_file(t.ports_dir, p.dirs, log)
+
+
+# --------------------------------------------------------------------------
+# KNULLI (Batocera) game list: the Ports menu reads name, picture and description from roms/ports/gamelist.xml.
+# PortMaster adds each port's <port>/gameinfo.xml to it when it installs a port (harbourmaster platform/base.py
+# gamelist_add); PortPicker installs without PortMaster, so it does the same merge.
+# --------------------------------------------------------------------------
+
+GAMELIST_FIELDS = ("path", "name", "image", "desc", "releasedate", "developer", "publisher", "players", "genre")
+
+
+def uses_gamelist(cfw: CFW | None) -> bool:
+    return bool(cfw) and cfw.id == "knulli"
+
+
+def merge_gameinfo(gamelist_xml: str | None, gameinfo_xml: str) -> str:
+    """Return gamelist.xml text with the games from a port's gameinfo.xml added or updated (matched by <path>).
+    Raises ValueError if either file is not valid XML (the caller then leaves gamelist.xml alone)."""
+    import xml.etree.ElementTree as ET
+    try:
+        root = ET.fromstring(gamelist_xml) if gamelist_xml and gamelist_xml.strip() else ET.Element("gameList")
+        info = ET.fromstring(gameinfo_xml)
+    except ET.ParseError as e:
+        raise ValueError(f"invalid XML: {e}") from e
+    games = [info] if info.tag == "game" else info.findall("game")
+    for g in games:
+        path = (g.findtext("path") or "").strip()
+        if not path:
+            continue
+        tgt = next((x for x in root.findall("game") if (x.findtext("path") or "").strip() == path), None)
+        if tgt is None:
+            tgt = ET.SubElement(root, "game")
+        for child in g:
+            if child.tag in GAMELIST_FIELDS:
+                el = tgt.find(child.tag)
+                if el is None:
+                    el = ET.SubElement(tgt, child.tag)
+                el.text = child.text
+    if hasattr(ET, "indent"):
+        ET.indent(root, space="  ")
+    return "<?xml version='1.0' encoding='utf-8'?>\n\n" + ET.tostring(root, encoding="unicode") + "\n"
+
+
+def gameinfo_files(base: Path, dirs: Iterable[str]) -> list[Path]:
+    return [base / d / "gameinfo.xml" for d in dirs if (base / d / "gameinfo.xml").is_file()]
+
+
+def update_gamelist_file(ports_dir: Path, dirs: Iterable[str], log: Log | None = None) -> None:
+    """Merge the installed port's gameinfo.xml into ports_dir/gamelist.xml (keeps a .bak of the old list)."""
+    infos = gameinfo_files(ports_dir, dirs)
+    if not infos:
+        return
+    gl = ports_dir / "gamelist.xml"
+    try:
+        old = gl.read_text(encoding="utf-8", errors="replace") if gl.is_file() else None
+        new = old
+        for f in infos:
+            new = merge_gameinfo(new, f.read_text(encoding="utf-8", errors="replace"))
+        if old is not None:
+            shutil.copy2(gl, gl.with_name("gamelist.xml.bak"))
+        tmp = gl.with_name("gamelist.xml.part")
+        tmp.write_text(new, encoding="utf-8")
+        os.replace(tmp, gl)
+        if log:
+            log(_tr("log.gamelist_updated", "  ✔ Added to the KNULLI game list (name, picture, description)"))
+    except (OSError, ValueError) as e:
+        if log:
+            log(_tr("log.gamelist_failed", "  ⚠ Could not update gamelist.xml ({err}); the game still works — "
+                    "use Game Settings → Update Gamelists on the handheld", err=e))
 
 
 BOX_ART_W_FRACTION = 0.45  # box art may use at most 45% of the screen width…
