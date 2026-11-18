@@ -361,7 +361,7 @@ def test_probe_rejects_non_muos(mock_remote_env):
     conn, ssh, sftp = mock_remote_env
     sftp.dirs.clear()
     sftp.dirs.add("/")
-    with pytest.raises(ValueError, match="only muOS is currently supported"):
+    with pytest.raises(ValueError, match="supports muOS and KNULLI"):
         wireless.probe_remote(conn)
 
 
@@ -503,7 +503,7 @@ def test_port_22_refused_error_hint():
         err = socket.error(socket.errno.ECONNREFUSED, "Connection refused")
         client.connect.side_effect = err
         conn = wireless.WirelessConnection()
-        with pytest.raises(ConnectionError, match="Turn on Secure File Transfer in muOS"):
+        with pytest.raises(ConnectionError, match="turn on Secure File Transfer"):
             conn.connect("192.168.1.10", port=22, username="root", password="pw")
 
 
