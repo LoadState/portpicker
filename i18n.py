@@ -1131,6 +1131,42 @@ STRINGS: dict[str, dict[str, str]] = {
         "en": "🎮 Not owned on Steam",
         "th": "🎮 ยังไม่มีเกมนี้ในคลัง Steam",
     },
+    "ports.status_ready": {
+        "en": "✅ Ready",
+        "th": "✅ พร้อมเล่น",
+    },
+    "ports.status_steam": {
+        "en": "🎮 Steam",
+        "th": "🎮 Steam",
+    },
+    "ports.status_check": {
+        "en": "🎮 Check",
+        "th": "🎮 ตรวจสอบ",
+    },
+    "ports.status_needs_files": {
+        "en": "📁 Needs your files",
+        "th": "📁 ต้องใส่ไฟล์เกม",
+    },
+    "steam.owned_no_recipe": {
+        "en": "You own it on Steam. Automatic download isn't set up for this game yet; copy the files as described below.",
+        "th": "คุณมีเกมนี้บน Steam แล้ว แต่ยังไม่มีระบบดาวน์โหลดอัตโนมัติสำหรับเกมนี้ กรุณาคัดลอกไฟล์ตามวิธีด้านล่าง",
+    },
+    "dialog.unsupported_blocked": {
+        "en": "The following game(s) are unsupported on this handheld and cannot be installed:\n\n{games}",
+        "th": "เกมต่อไปนี้ไม่รองรับบนเครื่องนี้ และไม่สามารถติดตั้งได้:\n\n{games}",
+    },
+    "dialog.missing_files_confirm": {
+        "en": "The following game(s) need additional game files:\n\n{games}\n\nInstall without game files? (Games will show a missing files message on device if files are not copied)",
+        "th": "เกมต่อไปนี้ต้องใช้ไฟล์เกมเพิ่มเติม:\n\n{games}\n\nต้องการติดตั้งโดยไม่มีไฟล์เกมหรือไม่? (ตัวเกมจะแสดงข้อความเตือนไฟล์ไม่ครบเมื่อเปิดเล่น)",
+    },
+    "steam.spacewar_note": {
+        "en": "Note: Steam authentication uses App 480 (Spacewar). Spacewar may appear in your Steam library.",
+        "th": "หมายเหตุ: การเข้าสู่ระบบ Steam ใช้ App 480 (Spacewar) อาจมีเกม Spacewar ปรากฏในคลังของคุณ",
+    },
+    "ports.btn_portmaster_page": {
+        "en": "🌐 PortMaster Page",
+        "th": "🌐 หน้า PortMaster",
+    },
 }
 
 

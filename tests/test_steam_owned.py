@@ -139,10 +139,11 @@ def test_cache_operations_and_7_day_expiry():
     steam_downloader.set_cached_ownership("tawa", "413150", True)
 
     cache = steam_downloader.load_steam_owned_cache()
-    assert "tawa" in cache
-    assert "413150" in cache["tawa"]
-    assert cache["tawa"]["413150"]["owned"] is True
-    assert abs(cache["tawa"]["413150"]["checked"] - now) < 5
+    acct_hash = steam_downloader._account_hash("tawa")
+    assert acct_hash in cache
+    assert "413150" in cache[acct_hash]
+    assert cache[acct_hash]["413150"]["owned"] is True
+    assert abs(cache[acct_hash]["413150"]["checked"] - now) < 5
 
     assert steam_downloader.get_cached_ownership("tawa", "413150") is True
     # Other user or app
@@ -151,15 +152,20 @@ def test_cache_operations_and_7_day_expiry():
 
     # Test cache within 7 days (e.g. 6 days old)
     six_days_ago = now - int(6 * 86400)
-    cache["tawa"]["413150"]["checked"] = six_days_ago
+    cache[acct_hash]["413150"]["checked"] = six_days_ago
     steam_downloader.save_steam_owned_cache(cache)
     assert steam_downloader.get_cached_ownership("tawa", "413150") is True
 
     # Test cache expired (> 7 days, e.g. 8 days old)
     eight_days_ago = now - int(8 * 86400)
-    cache["tawa"]["413150"]["checked"] = eight_days_ago
+    cache[acct_hash]["413150"]["checked"] = eight_days_ago
     steam_downloader.save_steam_owned_cache(cache)
     assert steam_downloader.get_cached_ownership("tawa", "413150") is None
+
+    # Test legacy unhashed account key backward compatibility
+    legacy_cache = {"old_user": {"12345": {"owned": True, "checked": now}}}
+    steam_downloader.save_steam_owned_cache(legacy_cache)
+    assert steam_downloader.get_cached_ownership("old_user", "12345") is True
 
 
 # --------------------------------------------------------------------------
@@ -242,12 +248,17 @@ def test_check_steam_ownership_not_owned_app(tmp_path):
 def test_check_steam_ownership_not_owned_depot(tmp_path):
     # Simulates DepotDownloader ContentDownloader.cs:565
     # "Depot 2379781 is not available from this account."
+    # When an app is owned, DepotDownloader prints depot unavailability for DLC/extra depots,
+    # but the app itself is owned (ContentDownloader.cs:438 is NOT thrown).
+    # Must return True (owned) per S2 Must Fix #2.
     script = (
         "import sys\n"
         "print('Connecting to Steam3...', flush=True)\n"
         "print('Logging in...', flush=True)\n"
+        "print('Got app info for 2379780', flush=True)\n"
         "print('Depot 2379781 is not available from this account.', flush=True)\n"
-        "sys.exit(1)\n"
+        "print('Manifest download complete.', flush=True)\n"
+        "sys.exit(0)\n"
     )
     fake_exe = _create_fake_depot_downloader(tmp_path, script)
 
@@ -256,7 +267,30 @@ def test_check_steam_ownership_not_owned_depot(tmp_path):
         account_name="tawa",
         depot_downloader_exe=fake_exe,
     )
-    assert res is False
+    assert res is True
+
+
+def test_check_steam_ownership_free_on_demand_license(tmp_path):
+    # Simulates DepotDownloader ContentDownloader.cs:426-438
+    # "Obtained FreeOnDemand license for app ..."
+    script = (
+        "import sys\n"
+        "print('Connecting to Steam3...', flush=True)\n"
+        "print('Logging in...', flush=True)\n"
+        "print('Obtained FreeOnDemand license for app 1336340', flush=True)\n"
+        "print('Manifest download complete.', flush=True)\n"
+        "sys.exit(0)\n"
+    )
+    fake_exe = _create_fake_depot_downloader(tmp_path, script)
+    logs = []
+    res = steam_downloader.check_steam_ownership(
+        appid="1336340",
+        account_name="tawa",
+        depot_downloader_exe=fake_exe,
+        log=logs.append,
+    )
+    assert res is True
+    assert any("Added to your library by Steam" in l for l in logs)
 
 
 def test_check_steam_ownership_login_missing_password_prompt(tmp_path):
@@ -333,62 +367,189 @@ def test_check_steam_ownership_batch(tmp_path):
 
 
 # --------------------------------------------------------------------------
-# 4. Filter Tests: Steam Filter and Owned Only in FREE_ONLY Mode
+# 4. Status Column, Filters, Detail Pane & Install Rules Tests (T-055)
 # --------------------------------------------------------------------------
 
-def test_filter_shows_paid_steam_ports_in_free_only():
+def test_status_column_all_cases():
+    """Verify Files status column values for all 5 cases (T-055 scope update):
+    1. Free ready-to-run -> ✅ Ready
+    2. Local folder / local Steam supplied -> ✅ Ready
+    3. Steam recipe + owned -> 🎮 Steam
+    4. Steam recipe + logged in + not checked -> 🎮 Check
+    5. Everything else -> 📁 Needs your files
+    """
+    from PySide6.QtWidgets import QApplication
+    from PySide6.QtCore import Qt
+    _ = QApplication.instance() or QApplication([])
+
+    ports_page = app.PortsPage(app.Images())
+
+    # Case 1: Free RTR port
+    p1 = make_port("free_rtr", rtr=True, availability="full")
+
+    # Case 2: Local folder supplied
+    p2 = make_port("local_game", rtr=False, availability="paid", local_dir=Path("/fake/path"))
+
+    # Case 3: Steam recipe + owned
+    # Balatro has recipe in STEAM_DEPOT_RECIPES
+    p3 = make_port("balatro", rtr=False, availability="paid", steam_owned=True)
+
+    # Case 4: Steam recipe + logged in + not checked
+    steam_auth.save_steam_credentials("tawa")
+    p4 = make_port("undertale", rtr=False, availability="paid", steam_owned=None)
+
+    # Case 5: Needs files (paid, no files supplied, unowned or no recipe)
+    p5_no_recipe = make_port("custom_steam", rtr=False, availability="paid", steam_appid="99999", steam_owned=True)
+    p5_unowned = make_port("balatro_unowned", rtr=False, availability="paid", steam_appid="2379780", steam_owned=False)
+
+    ports_page.set_ports([p1, p2, p3, p4, p5_no_recipe, p5_unowned])
+    model = ports_page.model
+
+    def get_status_text(port_name: str) -> str:
+        row = model.row_of[port_name]
+        return model.data(model.index(row, 5), Qt.DisplayRole)
+
+    assert "Ready" in get_status_text("free_rtr.zip")
+    assert "Ready" in get_status_text("local_game.zip")
+    assert "Steam" in get_status_text("balatro.zip")
+    assert "Check" in get_status_text("undertale.zip")
+    assert "Needs your files" in get_status_text("custom_steam.zip")
+    assert "Needs your files" in get_status_text("balatro_unowned.zip")
+
+
+def test_no_paid_port_hidden_by_default_and_all_filters_off():
+    """Verify that FREE_ONLY is turned off, paid ports are visible by default,
+    and with all filters off row count == total ports.
+    """
     from PySide6.QtWidgets import QApplication
     _ = QApplication.instance() or QApplication([])
 
     ports_page = app.PortsPage(app.Images())
 
-    # Create 3 test ports:
-    # 1. Free RTR non-Steam game
-    p_free = make_port("free_game", rtr=True, availability="full")
-    # 2. Paid Steam game
-    p_steam_paid = make_port("paid_steam", rtr=False, availability="paid", steam_appid="413150")
-    # 3. Paid non-Steam game
-    p_non_steam_paid = make_port("paid_other", rtr=False, availability="paid")
+    p_free = make_port("free_game", rtr=True, availability="full", tier="ok")
+    p_paid_steam = make_port("gravitycircuit", rtr=False, availability="paid", steam_appid="858710", tier="must")
+    p_paid_other = make_port("paid_rpg", rtr=False, availability="paid", tier="heavy")
+    p_unsupported = make_port("unsupported_game", rtr=True, availability="full", tier="incompatible")
 
-    ports_page.set_ports([p_free, p_steam_paid, p_non_steam_paid])
+    ports_page.set_ports([p_free, p_paid_steam, p_paid_other, p_unsupported])
 
-    # Case A: Steam filter is OFF, ready_only is checked (default in FREE_ONLY)
-    assert ports_page.steam_filter.isChecked() is False
-    assert ports_page.ready_only.isChecked() is True
-    # Only the free RTR game is shown
+    # Default view: must, ok, heavy are checked, broken & incompatible are unchecked
     visible_names = [p.name for p in ports_page.model.rows]
     assert "free_game.zip" in visible_names
-    assert "paid_steam.zip" not in visible_names
-    assert "paid_other.zip" not in visible_names
+    assert "gravitycircuit.zip" in visible_names  # Paid Steam port NOT hidden by default!
+    assert "paid_rpg.zip" in visible_names       # Paid non-Steam port NOT hidden by default!
+    assert "unsupported_game.zip" not in visible_names
 
-    # Case B: Steam filter is toggled ON
+    # Test Tawaphol requirement: all filters off -> row count == number of ports
+    for cb in ports_page.tier_boxes.values():
+        cb.setChecked(False)
+    ports_page.steam_filter.setChecked(False)
+    ports_page.owned_only.setChecked(False)
+    ports_page.search.setText("")
+    ports_page.apply_filter()
+
+    assert ports_page.model.rowCount() == len(ports_page.ports)
+    all_names = [p.name for p in ports_page.model.rows]
+    assert "unsupported_game.zip" in all_names
+
+
+def test_steam_filter_and_owned_filter():
+    """Test Steam filter toggle and Owned only toggle."""
+    from PySide6.QtWidgets import QApplication
+    _ = QApplication.instance() or QApplication([])
+
+    ports_page = app.PortsPage(app.Images())
+
+    p_free = make_port("free_game", rtr=True, availability="full", tier="ok")
+    p_steam_owned = make_port("balatro", rtr=False, availability="paid", steam_owned=True, tier="ok")
+    p_steam_unowned = make_port("sprout", rtr=False, availability="paid", steam_appid="1336340", steam_owned=False, tier="ok")
+
+    ports_page.set_ports([p_free, p_steam_owned, p_steam_unowned])
+
+    # Turn on Steam filter
     ports_page.steam_filter.setChecked(True)
     visible_names = [p.name for p in ports_page.model.rows]
-    # Paid Steam game MUST be shown now (ready-only does NOT hide it in Steam filter mode)
-    assert "paid_steam.zip" in visible_names
-    # Non-Steam games (free or paid) are excluded
+    assert "balatro.zip" in visible_names
+    assert "sprout.zip" in visible_names
     assert "free_game.zip" not in visible_names
-    assert "paid_other.zip" not in visible_names
 
-    # Case C: Owned only filter
+    # Turn on Owned only filter
     steam_auth.save_steam_credentials("tawa")
     ports_page.update_steam_auth_ui()
-    assert not ports_page.owned_only.isHidden()
-
-    # Before checking ownership, steam_owned is None
-    p_steam_paid.steam_owned = None
     ports_page.owned_only.setChecked(True)
-    visible_names = [p.name for p in ports_page.model.rows]
-    assert "paid_steam.zip" not in visible_names
 
-    # Mark as owned
-    p_steam_paid.steam_owned = True
-    ports_page.apply_filter()
     visible_names = [p.name for p in ports_page.model.rows]
-    assert "paid_steam.zip" in visible_names
+    assert "balatro.zip" in visible_names
+    assert "sprout.zip" not in visible_names
 
-    # Mark as not owned
-    p_steam_paid.steam_owned = False
-    ports_page.apply_filter()
-    visible_names = [p.name for p in ports_page.model.rows]
-    assert "paid_steam.zip" not in visible_names
+
+def test_store_links_detail_pane_and_owned_no_recipe():
+    """Verify store buttons from attr.store[], PortMaster link, inst_md rendering,
+    and note when owned on Steam but no automatic recipe exists.
+    """
+    from PySide6.QtWidgets import QApplication
+    _ = QApplication.instance() or QApplication([])
+
+    ports_page = app.PortsPage(app.Images())
+
+    p = make_port(
+        "celeste",
+        stores=[
+            {"name": "Steam", "gameurl": "https://store.steampowered.com/app/504230/Celeste/"},
+            {"name": "Itch.io", "gameurl": "https://mattmakesgames.itch.io/celeste"},
+        ],
+        inst_md="Copy `Celeste.exe` into the `celeste` folder.",
+        steam_appid="504230",
+        steam_owned=True,  # Owned on Steam, but Celeste has no STEAM_DEPOT_RECIPES entry
+    )
+
+    ports_page.set_ports([p])
+    # Select the row to trigger _show
+    ports_page._show(ports_page.model.index(0, 0))
+
+    # Store buttons in detail pane
+    button_texts = [w.text() for w in ports_page.d_links_box.findChildren(app.QPushButton)]
+    assert any("Steam" in text for text in button_texts)
+    assert any("Itch" in text for text in button_texts)
+    assert any("PortMaster" in text for text in button_texts)
+
+    # Instructions rendered
+    assert "Celeste.exe" in ports_page.d_inst.text()
+
+    # Owned on Steam but no recipe note is visible
+    assert ports_page.d_steam_owned_note.isHidden() is False
+    assert "Automatic download isn't set up" in ports_page.d_steam_owned_note.text()
+
+
+def test_install_blocked_for_unsupported_and_missing_files():
+    """Verify that install stays blocked for Unsupported ports with reasons shown,
+    and ports needing files prompt confirmation.
+    """
+    import profiles
+    from PySide6.QtWidgets import QApplication, QMessageBox
+    from unittest.mock import patch, MagicMock
+    _ = QApplication.instance() or QApplication([])
+
+    main_win = app.Main()
+    main_win.dev = profiles.DEVICES[0]
+
+    # Fake target
+    mock_target = MagicMock()
+    mock_target.is_wireless = False
+    mock_target.ports_dir = Path("/fake/ports")
+    main_win.p_cfw.target = lambda: mock_target
+
+    # Case A: Unsupported port -> blocked
+    p_unsupported = make_port("bad_game", title="Bad Game", tier="incompatible", reasons=["No aarch64 build available"])
+    with patch.object(QMessageBox, "warning") as mock_warn:
+        main_win._install(ports=[p_unsupported])
+        assert mock_warn.called
+        assert "No aarch64 build available" in mock_warn.call_args[0][2]
+        assert "unsupported" in mock_warn.call_args[0][2].lower()
+
+    # Case B: Missing files port -> confirmation asked
+    p_needs_files = make_port("stardew", title="Stardew", tier="ok", rtr=False, availability="paid", inst="Needs game files")
+    with patch.object(QMessageBox, "question", return_value=QMessageBox.No) as mock_q:
+        main_win._install(ports=[p_needs_files])
+        assert mock_q.called
+        assert "Needs game files" in mock_q.call_args[0][2]

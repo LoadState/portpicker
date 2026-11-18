@@ -782,6 +782,11 @@ def save_steam_owned_cache(cache: dict) -> None:
             pass
 
 
+def _account_hash(account: str) -> str:
+    """Return SHA-256 hex digest of lowercase account name for cache key privacy."""
+    return hashlib.sha256(account.strip().lower().encode("utf-8")).hexdigest()
+
+
 def get_cached_ownership(
     account: str,
     appid: str,
@@ -791,9 +796,13 @@ def get_cached_ownership(
     if not account or not appid:
         return None
     cache = load_steam_owned_cache()
-    acct_cache = cache.get(account)
+    key = _account_hash(account)
+    acct_cache = cache.get(key)
     if not isinstance(acct_cache, dict):
-        return None
+        # Support reading legacy plain account name key if present
+        acct_cache = cache.get(account)
+        if not isinstance(acct_cache, dict):
+            return None
     entry = acct_cache.get(str(appid))
     if not isinstance(entry, dict) or "owned" not in entry or "checked" not in entry:
         return None
@@ -804,13 +813,14 @@ def get_cached_ownership(
 
 
 def set_cached_ownership(account: str, appid: str, owned: bool) -> None:
-    """Cache ownership check result for account and appid."""
+    """Cache ownership check result for account and appid using SHA-256 hashed account key."""
     if not account or not appid:
         return
     cache = load_steam_owned_cache()
-    if account not in cache or not isinstance(cache[account], dict):
-        cache[account] = {}
-    cache[account][str(appid)] = {
+    key = _account_hash(account)
+    if key not in cache or not isinstance(cache[key], dict):
+        cache[key] = {}
+    cache[key][str(appid)] = {
         "owned": bool(owned),
         "checked": int(time.time()),
     }
@@ -832,9 +842,14 @@ def check_steam_ownership(
     Ownership determination (cited from DepotDownloader 3.4.0 source):
       - ContentDownloader.cs:438:
           throw new ContentDownloaderException(string.Format("App {0} ({1}) is not available from this account.", appId, contentName));
+          -> Unowned app. Only the app-level message means unowned.
       - ContentDownloader.cs:565:
           Console.WriteLine("Depot {0} is not available from this account.", depotId);
-      Owned:
+          -> Individual depot (DLC, soundtrack, language) unavailable. Does NOT mean the app is unowned!
+      - ContentDownloader.cs:426-438:
+          Obtained FreeOnDemand license for app ...
+          -> License automatically granted by Steam; treat as owned and report in log.
+      - Owned:
           Downloads manifest and exits 0.
 
     Reuses run_depot_downloader_process (stdin DEVNULL, CREATE_NO_WINDOW, watchdog, login-missing handling from PR #13).
@@ -859,6 +874,11 @@ def check_steam_ownership(
         str(tmp_dir),
     ]
 
+    def _is_app_unowned_line(text: str) -> bool:
+        # Match ContentDownloader.cs:438: "App <id> (<name>) is not available from this account."
+        # Avoid false positive from ContentDownloader.cs:565: "Depot <id> is not available from this account."
+        return bool(re.search(rf"\bApp\s+{re.escape(str(appid))}\b.*is not available from this account", text))
+
     try:
         captured_lines: list[str] = []
         is_not_owned = False
@@ -876,13 +896,19 @@ def check_steam_ownership(
             if STEAM_LOGIN_MISSING in err_str:
                 raise
             lines = getattr(exc, "captured_lines", []) or [err_str]
-            if any("is not available from this account" in l for l in lines) or "is not available from this account" in err_str:
+            if any(_is_app_unowned_line(l) for l in lines) or _is_app_unowned_line(err_str):
                 is_not_owned = True
             else:
                 raise
 
-        if any("is not available from this account" in l for l in captured_lines):
-            is_not_owned = True
+        all_lines = captured_lines + (lines if 'lines' in locals() else [])
+        for line in all_lines:
+            if "Obtained FreeOnDemand license" in line:
+                if log:
+                    log(f"  🎮 Added to your library by Steam (FreeOnDemand license)")
+                return True
+            if _is_app_unowned_line(line):
+                is_not_owned = True
 
         return not is_not_owned
     finally:
@@ -901,6 +927,9 @@ def check_steam_ownership_batch(
     """Check ownership for a batch of appids, utilizing 7-day cache unless recheck is True."""
     results: dict[str, bool] = {}
     tot = len(appids)
+    est_minutes = max(1, round(tot * 10 / 60))
+    if log and tot > 1:
+        log(f"Starting Steam ownership check for {tot} games (about {est_minutes} minute{'s' if est_minutes != 1 else ''})…")
     for idx, appid in enumerate(appids):
         if cancel and cancel():
             raise InterruptedError("cancelled")

@@ -236,6 +236,7 @@ class Port:
     cover: str
     date_updated: str
     stores: list[dict] = field(default_factory=list)
+    inst_md: str = ""
     # computed
     tier: str = "ok"     # must, ok, heavy, broken, incompatible
     reasons: list[str] = field(default_factory=list)
@@ -250,8 +251,10 @@ class Port:
     beta: list[dict] = field(default_factory=list)  # beta sheet rows for the chosen device + CFW
 
     def __post_init__(self):
+        if self.steam_depot is None:
+            self.steam_depot = steam_downloader.STEAM_DEPOT_RECIPES.get(self.stem)
         if self.steam_appid is None:
-            recipe = steam_downloader.STEAM_DEPOT_RECIPES.get(self.stem)
+            recipe = self.steam_depot
             if recipe and recipe.appid:
                 self.steam_appid = str(recipe.appid)
             else:
@@ -328,6 +331,7 @@ def load_catalog(force: bool = False) -> tuple[list[Port], dict]:
             cover=(img.get("covers") or [""])[0] or "",
             date_updated=src.get("date_updated", ""),
             stores=a.get("store") or [],
+            inst_md=a.get("inst_md") or "",
         ))
     return ports, data.get("utils", {})
 
