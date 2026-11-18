@@ -103,17 +103,16 @@ def test_i18n_strings():
 
 
 # -----------------------------------------------------------------------------
-# 3. FREE_ONLY config and UI hiding tests
+# 3. FREE_ONLY config and UI tests (updated for T-055: FREE_ONLY turned off)
 # -----------------------------------------------------------------------------
 def test_free_only_constants():
     import app
 
-    assert app.FREE_ONLY is True
-    # In FREE_ONLY mode, DEFAULT_LOCAL must be None (no default scan folder)
-    assert app.DEFAULT_LOCAL is None
+    # T-055: FREE_ONLY turned off to list all ports
+    assert app.FREE_ONLY is False
 
 
-def test_free_only_ui_hiding():
+def test_free_only_ui_controls():
     from PySide6.QtWidgets import QApplication
     import app
 
@@ -121,20 +120,14 @@ def test_free_only_ui_hiding():
 
     ports_page = app.PortsPage(app.Images())
 
-    # Local game file picking elements must be hidden
-    assert ports_page.local_label.isHidden() is True
-    assert ports_page.local.isHidden() is True
-    assert ports_page.local_pick_btn.isHidden() is True
-    assert ports_page.scan_btn.isHidden() is True
+    # T-055: Local game file picking elements and fbox are shown
+    assert ports_page.local_label.isHidden() is False
+    assert ports_page.local.isHidden() is False
+    assert ports_page.local_pick_btn.isHidden() is False
+    assert ports_page.scan_btn.isHidden() is False
+    assert ports_page.fbox.isHidden() is False
+    assert ports_page.d_pick.isHidden() is False
+    assert ports_page.d_clear.isHidden() is False
 
-    # Detail box local pick elements must be hidden
-    assert ports_page.fbox.isHidden() is True
-    assert ports_page.d_pick.isHidden() is True
-    assert ports_page.d_clear.isHidden() is True
-
-    # "From PC" tier filter box must be hidden
-    assert ports_page.tier_boxes["local"].isHidden() is True
-
-    # Ready-to-run checkbox must be hidden and checked
-    assert ports_page.ready_only.isHidden() is True
-    assert ports_page.ready_only.isChecked() is True
+    # Ready-to-run hidden filter is removed
+    assert not hasattr(ports_page, "ready_only")

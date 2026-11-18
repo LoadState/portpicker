@@ -204,6 +204,17 @@ def norm(s: str) -> str:
     return re.sub(r"[^a-z0-9]", "", s.lower())
 
 
+STEAM_APPID_RE = re.compile(r"store\.steampowered\.com/app/(\d+)", re.I)
+
+
+def parse_steam_appid(url: str | None) -> str | None:
+    """Extract numeric Steam appid from a store URL (e.g. store.steampowered.com/app/1336340/...)."""
+    if not url:
+        return None
+    m = STEAM_APPID_RE.search(str(url))
+    return m.group(1) if m else None
+
+
 @dataclass
 class Port:
     name: str            # zip name e.g. celeste.zip
@@ -225,6 +236,7 @@ class Port:
     cover: str
     date_updated: str
     stores: list[dict] = field(default_factory=list)
+    inst_md: str = ""
     # computed
     tier: str = "ok"     # must, ok, heavy, broken, incompatible
     reasons: list[str] = field(default_factory=list)
@@ -234,7 +246,24 @@ class Port:
     local_note: str = ""
     steam: "steam.Match | None" = None   # set by attach_steam()
     steam_depot: "steam_downloader.SteamDepotRecipe | None" = None  # set by attach_steam()
+    steam_appid: str | None = None
+    steam_owned: bool | None = None
     beta: list[dict] = field(default_factory=list)  # beta sheet rows for the chosen device + CFW
+
+    def __post_init__(self):
+        if self.steam_depot is None:
+            self.steam_depot = steam_downloader.STEAM_DEPOT_RECIPES.get(self.stem)
+        if self.steam_appid is None:
+            recipe = self.steam_depot
+            if recipe and recipe.appid:
+                self.steam_appid = str(recipe.appid)
+            else:
+                for s in self.stores:
+                    if isinstance(s, dict):
+                        appid = parse_steam_appid(s.get("gameurl")) or parse_steam_appid(s.get("url"))
+                        if appid:
+                            self.steam_appid = appid
+                            break
 
     @property
     def stem(self) -> str:
@@ -302,6 +331,7 @@ def load_catalog(force: bool = False) -> tuple[list[Port], dict]:
             cover=(img.get("covers") or [""])[0] or "",
             date_updated=src.get("date_updated", ""),
             stores=a.get("store") or [],
+            inst_md=a.get("inst_md") or "",
         ))
     return ports, data.get("utils", {})
 
@@ -442,9 +472,15 @@ def attach_steam(ports: Iterable[Port], apps: dict) -> int:
     Run after classify(), which resets reasons. Returns how many can be filled from Steam."""
     n = 0
     auth = steam_auth.is_steam_authenticated()
+    creds = steam_auth.get_steam_credentials() if auth else None
+    account = creds.get("account_name") if creds else None
     for p in ports:
         p.steam = None
         p.steam_depot = steam_downloader.STEAM_DEPOT_RECIPES.get(p.stem)
+        if account and p.steam_appid:
+            cached = steam_downloader.get_cached_ownership(account, p.steam_appid)
+            if cached is not None:
+                p.steam_owned = cached
         if p.local_only or p.rtr or p.tier == "incompatible":
             continue
         m = steam.match(p.stem, apps)

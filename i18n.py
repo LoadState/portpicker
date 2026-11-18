@@ -1075,6 +1075,98 @@ STRINGS: dict[str, dict[str, str]] = {
         "en": "  ✔ Placed {count} Steam files into {dest}",
         "th": "  ✔ ติดตั้งไฟล์ Steam จำนวน {count} ไฟล์ลงใน {dest}",
     },
+    "ports.filter_steam": {
+        "en": "🎮 Steam",
+        "th": "🎮 Steam",
+    },
+    "ports.filter_owned_only": {
+        "en": "Owned only",
+        "th": "เฉพาะที่มีในไอดี",
+    },
+    "ports.btn_check_steam": {
+        "en": "Check my Steam games",
+        "th": "ตรวจสอบเกม Steam",
+    },
+    "ports.chk_recheck": {
+        "en": "Re-check",
+        "th": "ตรวจใหม่",
+    },
+    "ports.tooltip_recheck": {
+        "en": "Ignore 7-day cache and query Steam again",
+        "th": "ไม่ใช้แคช 7 วัน ตรวจสอบกับ Steam ใหม่",
+    },
+    "steam.owned": {
+        "en": "✅ Owned",
+        "th": "✅ เป็นเจ้าของแล้ว",
+    },
+    "steam.not_owned": {
+        "en": "❌ Not owned",
+        "th": "❌ ยังไม่ได้เป็นเจ้าของ",
+    },
+    "steam.not_checked": {
+        "en": "? Not checked",
+        "th": "? ยังไม่ได้ตรวจสอบ",
+    },
+    "steam.checking_ownership": {
+        "en": "Checking Steam ownership…",
+        "th": "กำลังตรวจสอบความเป็นเจ้าของ Steam…",
+    },
+    "steam.check_title": {
+        "en": "Steam Ownership Check",
+        "th": "ตรวจสอบความเป็นเจ้าของ Steam",
+    },
+    "steam.all_cached": {
+        "en": "All visible Steam games were verified from 7-day cache.",
+        "th": "เกม Steam ทั้งหมดได้รับการยืนยันจากแคช 7 วันแล้ว",
+    },
+    "steam.no_visible_games": {
+        "en": "No Steam games currently visible in the list.",
+        "th": "ไม่มีเกม Steam ที่แสดงอยู่ในรายการขณะนี้",
+    },
+    "reason.steam_owned": {
+        "en": "🎮 Owned on Steam",
+        "th": "🎮 มีเกมนี้ในคลัง Steam",
+    },
+    "reason.steam_not_owned": {
+        "en": "🎮 Not owned on Steam",
+        "th": "🎮 ยังไม่มีเกมนี้ในคลัง Steam",
+    },
+    "ports.status_ready": {
+        "en": "✅ Ready",
+        "th": "✅ พร้อมเล่น",
+    },
+    "ports.status_steam": {
+        "en": "🎮 Steam",
+        "th": "🎮 Steam",
+    },
+    "ports.status_check": {
+        "en": "🎮 Check",
+        "th": "🎮 ตรวจสอบ",
+    },
+    "ports.status_needs_files": {
+        "en": "📁 Needs your files",
+        "th": "📁 ต้องใส่ไฟล์เกม",
+    },
+    "steam.owned_no_recipe": {
+        "en": "You own it on Steam. Automatic download isn't set up for this game yet; copy the files as described below.",
+        "th": "คุณมีเกมนี้บน Steam แล้ว แต่ยังไม่มีระบบดาวน์โหลดอัตโนมัติสำหรับเกมนี้ กรุณาคัดลอกไฟล์ตามวิธีด้านล่าง",
+    },
+    "dialog.unsupported_blocked": {
+        "en": "The following game(s) are unsupported on this handheld and cannot be installed:\n\n{games}",
+        "th": "เกมต่อไปนี้ไม่รองรับบนเครื่องนี้ และไม่สามารถติดตั้งได้:\n\n{games}",
+    },
+    "dialog.missing_files_confirm": {
+        "en": "The following game(s) need additional game files:\n\n{games}\n\nInstall without game files? (Games will show a missing files message on device if files are not copied)",
+        "th": "เกมต่อไปนี้ต้องใช้ไฟล์เกมเพิ่มเติม:\n\n{games}\n\nต้องการติดตั้งโดยไม่มีไฟล์เกมหรือไม่? (ตัวเกมจะแสดงข้อความเตือนไฟล์ไม่ครบเมื่อเปิดเล่น)",
+    },
+    "steam.spacewar_note": {
+        "en": "Note: Steam authentication uses App 480 (Spacewar). Spacewar may appear in your Steam library.",
+        "th": "หมายเหตุ: การเข้าสู่ระบบ Steam ใช้ App 480 (Spacewar) อาจมีเกม Spacewar ปรากฏในคลังของคุณ",
+    },
+    "ports.btn_portmaster_page": {
+        "en": "🌐 PortMaster Page",
+        "th": "🌐 หน้า PortMaster",
+    },
 }
 
 
