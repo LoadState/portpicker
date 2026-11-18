@@ -303,7 +303,8 @@ def test_fake_mode_downloads_mock_files(tmp_path):
 def test_verified_recipes():
     """Verify S2 Must Fix #1: Recipes trimmed to 1-2 ports (untested; needs hardware test)."""
     recipes = steam_downloader.STEAM_DEPOT_RECIPES
-    assert len(recipes) == 3
+    assert len(recipes) == 4
+    assert recipes["gravitycircuit"].filelist == ("GravityCircuit.exe",)
     assert "stardewvalleymainline" in recipes
     assert "balatro" in recipes
     assert "undertale" in recipes

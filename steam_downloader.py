@@ -229,6 +229,17 @@ STEAM_DEPOT_RECIPES: dict[str, SteamDepotRecipe] = {
         os="windows",
         note="Stardew Valley Windows depot, full (~0.6 GB) (PortMaster stardewvalleymainline README)",
     ),
+    # 4. Gravity Circuit: the port needs only GravityCircuit.exe (a LÖVE game; the port patches it on first run).
+    # ports.json inst: "Drop GravityCircuit.exe from either your Epic, GOG or Steam copy of the game into
+    # /roms/ports/gravitycircuit/gamedata"; the launcher checks ./gamedata/GravityCircuit.exe.
+    # https://github.com/PortsMaster/PortMaster-New/tree/main/ports/gravitycircuit
+    "gravitycircuit": SteamDepotRecipe(
+        appid="858710",
+        dest="gravitycircuit/gamedata",
+        filelist=("GravityCircuit.exe",),
+        os="windows",
+        note="Gravity Circuit executable (PortMaster gravitycircuit)",
+    ),
 }
 
 
